@@ -265,6 +265,27 @@ async function buildSummaries(pool: Pool, products: ProductRow[]): Promise<Produ
   });
 }
 
+/** Summaries for an explicit id list, returned in the given order. */
+export async function getProductSummariesByIds(
+  pool: Pool,
+  ids: string[],
+): Promise<ProductSummaryDTO[]> {
+  if (ids.length === 0) return [];
+  const { rows } = await pool.query<ProductRow>(
+    `select p.id, p.category_id, c.slug as category_slug, p.slug, p.name, p.tagline,
+            p.description, p.ingredients, p.how_to_use,
+            p.base_price_cents, p.compare_at_price_cents, p.track_inventory,
+            p.variant_label, p.is_featured, p.meta_title, p.meta_description
+       from products p
+       join categories c on c.id = p.category_id
+      where p.id = any($1::uuid[]) and p.status = 'active'`,
+    [ids],
+  );
+  const summaries = await buildSummaries(pool, rows);
+  const byId = new Map(summaries.map((s) => [s.id, s]));
+  return ids.map((id) => byId.get(id)).filter((s): s is ProductSummaryDTO => Boolean(s));
+}
+
 export async function getProductBySlug(pool: Pool, slug: string): Promise<ProductDetailDTO> {
   const { rows } = await pool.query<ProductRow>(
     `select p.id, p.category_id, c.slug as category_slug, p.slug, p.name, p.tagline,

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import * as svc from './catalog.service.js';
+import { getRelatedProductIds } from './related.service.js';
 
 const listQuerySchema = z.object({
   category: z.string().regex(/^[a-z0-9-]+$/).optional(),
@@ -36,6 +37,21 @@ export function catalogRoutes(pool: Pool): Router {
   r.get('/products/:slug', async (req, res) => {
     res.set('Cache-Control', CACHE);
     res.json({ product: await svc.getProductBySlug(pool, req.params.slug) });
+  });
+
+  r.get('/products/:slug/related', async (req, res) => {
+    const limit = z.coerce.number().int().min(1).max(12).default(4).parse(req.query.limit);
+    const scored = await getRelatedProductIds(pool, req.params.slug, limit);
+    const products = await svc.getProductSummariesByIds(
+      pool,
+      scored.map((s) => s.productId),
+    );
+    res.set('Cache-Control', CACHE);
+    res.json({
+      products,
+      // score + human-readable reasons ride along for UI badges/debugging
+      meta: scored,
+    });
   });
 
   r.get('/settings', async (_req, res) => {
