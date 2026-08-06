@@ -19,10 +19,27 @@ export const stripe = stripeEnabled
 
 /* ---------- create session ---------- */
 
+export interface CheckoutShipping {
+  name: string;
+  phone: string | null;
+  line1: string;
+  line2: string | null;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+}
+
+export interface CheckoutCustomer {
+  id: string;
+  email: string;
+}
+
 export async function createCheckoutSession(
   pool: Pool,
   items: CartItemInput[],
-  email?: string,
+  customer: CheckoutCustomer,
+  shipping: CheckoutShipping,
 ): Promise<CreateCheckoutSessionResponse> {
   const settings = await getSettings(pool);
   if (!settings.checkoutEnabled) throw unavailable('Checkout is temporarily disabled');
@@ -52,10 +69,20 @@ export async function createCheckoutSession(
   try {
     await client.query('begin');
     const { rows } = await client.query<{ id: string; order_number: string }>(
-      `insert into orders (status, email, currency, subtotal_cents, shipping_cents, total_cents, expires_at)
-       values ('pending', $1, $2, $3, $4, $5, now() + interval '30 minutes')
+      `insert into orders
+         (status, customer_id, email, customer_name, phone,
+          shipping_name, shipping_line1, shipping_line2, shipping_city,
+          shipping_state, shipping_postal_code, shipping_country,
+          currency, subtotal_cents, shipping_cents, total_cents, expires_at)
+       values ('pending', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+               $12, $13, $14, $15, now() + interval '30 minutes')
        returning id, order_number`,
-      [email ?? null, settings.currency, subtotalCents, shippingCents, totalCents],
+      [
+        customer.id, customer.email, shipping.name, shipping.phone,
+        shipping.name, shipping.line1, shipping.line2, shipping.city,
+        shipping.state, shipping.postalCode, shipping.country,
+        settings.currency, subtotalCents, shippingCents, totalCents,
+      ],
     );
     orderId = rows[0]!.id;
     orderNumber = rows[0]!.order_number;
@@ -126,11 +153,9 @@ export async function createCheckoutSession(
       client_reference_id: orderId,
       metadata: { order_id: orderId, order_number: orderNumber },
       payment_intent_data: { metadata: { order_id: orderId, order_number: orderNumber } },
-      customer_email: email || undefined,
-      shipping_address_collection: {
-        allowed_countries: settings.allowedShippingCountries as Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry[],
-      },
-      phone_number_collection: { enabled: true },
+      // Address and phone were collected on our own checkout page (logged-in
+      // customers), so Stripe doesn't ask again.
+      customer_email: customer.email,
       shipping_options: [
         {
           shipping_rate_data: {

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import type { Pool } from 'pg';
 import { notFound } from '../../lib/errors.js';
 import { storage } from '../../lib/storage.js';
@@ -72,9 +73,21 @@ export function adminOrderRoutes(pool: Pool): Router {
     const { rows: items } = await pool.query(
       `select * from order_items where order_id = $1 order by created_at`, [o.id],
     );
+    const { rows: events } = await pool.query(
+      `select id, stage::text, note, actor, created_at
+         from order_events where order_id = $1 order by created_at`, [o.id],
+    );
 
     res.json({
       order: {
+        fulfillmentStage: o.fulfillment_stage,
+        events: events.map((e) => ({
+          id: e.id,
+          stage: e.stage,
+          note: e.note,
+          actor: e.actor,
+          createdAt: e.created_at,
+        })),
         id: o.id,
         orderNumber: o.order_number,
         status: o.status,
@@ -120,6 +133,50 @@ export function adminOrderRoutes(pool: Pool): Router {
         })),
       },
     });
+  });
+
+  // Fulfillment pipeline: admin advances payment_received -> packaged -> shipped.
+  // 'delivered' normally comes from the customer, but admin may set it too.
+  r.patch('/orders/:id/stage', async (req, res) => {
+    const { stage, note } = z
+      .object({
+        stage: z.enum(['payment_received', 'packaged', 'shipped', 'delivered']),
+        note: z.string().trim().max(500).optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      const { rows } = await client.query(
+        `select id from orders where id = $1 for update`,
+        [req.params.id],
+      );
+      if (!rows[0]) throw notFound('Order not found');
+
+      await client.query(
+        `update orders set fulfillment_stage = $2::fulfillment_stage,
+                status = case when $2 = 'delivered' and status = 'paid'
+                              then 'fulfilled'::order_status else status end,
+                fulfilled_at = case when $2 = 'delivered'
+                                    then coalesce(fulfilled_at, now()) else fulfilled_at end
+          where id = $1`,
+        [req.params.id, stage],
+      );
+      await client.query(
+        `insert into order_events (order_id, stage, note, actor)
+         values ($1, $2::fulfillment_stage, $3, 'admin')`,
+        [req.params.id, stage, note ?? null],
+      );
+      await client.query('commit');
+      res.json({ ok: true });
+    } catch (err) {
+      await client.query('rollback');
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 
   r.patch('/orders/:id', async (req, res) => {
