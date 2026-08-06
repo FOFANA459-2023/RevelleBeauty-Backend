@@ -1,0 +1,6 @@
+{
+  // Production build: ship src + contracts only. `npm run typecheck` still
+  // uses tsconfig.json, which additionally covers tests/.
+  "extends": "./tsconfig.json",
+  "include": ["src/**/*.ts", "contracts/**/*.ts"]
+}

@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { env } from '../config/env.js';
 import { logger } from './logger.js';
+import { UPLOADS_DIR } from './paths.js';
 
 /**
  * Storage abstraction. Dev: local disk under backend/uploads, served at
@@ -18,8 +18,7 @@ export interface StorageDriver {
   publicUrl(storagePath: string): string;
 }
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-export const UPLOADS_DIR = path.resolve(here, '../../uploads');
+export { UPLOADS_DIR };
 
 class LocalDiskStorage implements StorageDriver {
   async put(storagePath: string, buf: Buffer): Promise<string> {

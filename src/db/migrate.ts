@@ -1,11 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { Pool } from 'pg';
 import { logger } from '../lib/logger.js';
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = path.resolve(here, '../../migrations');
+import { MIGRATIONS_DIR } from '../lib/paths.js';
 
 /**
  * Minimal forward-only migration runner. Applied files are recorded in

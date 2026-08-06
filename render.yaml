@@ -1,0 +1,44 @@
+# One concrete, free-tier-capable way to host this API.
+# Render reads this blueprint automatically ("New → Blueprint" → pick the repo).
+# Equivalent setups work on Railway, Fly.io, Koyeb, or any Docker host — the
+# Dockerfile is the portable artifact. See DEPLOY.md.
+
+services:
+  - type: web
+    name: revelle-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT; the app reads it.
+      - key: FRONTEND_URL
+        sync: false # e.g. https://revellebeauty.com
+      - key: CORS_ORIGINS
+        sync: false # same value as FRONTEND_URL
+      - key: DATABASE_URL
+        sync: false # Supabase session-pooler URI
+      - key: STORAGE_DRIVER
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false # secret
+      - key: SUPABASE_STORAGE_BUCKET
+        value: product-images
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD_HASH
+        sync: false # secret — bcrypt hash, never the plaintext
+      - key: ADMIN_JWT_SECRET
+        generateValue: true # Render generates a strong random value
+      - key: STRIPE_SECRET_KEY
+        sync: false # secret, once Stripe is set up
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false # secret
+# `sync: false` means "prompt me in the dashboard" — the value is never
+# stored in this file or in git.
