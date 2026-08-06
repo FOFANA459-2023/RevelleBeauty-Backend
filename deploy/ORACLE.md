@@ -8,16 +8,39 @@ Genuinely free, never sleeps. Roughly 30 minutes end to end.
 
 | Setting | Value |
 |---|---|
-| Image | Canonical **Ubuntu 24.04** |
-| Shape | **VM.Standard.A1.Flex** (Ampere ARM) — 2 OCPU / 12 GB is plenty |
+| Image | Canonical **Ubuntu 24.04** (change from the Oracle Linux default) |
+| Shape | **VM.Standard.A1.Flex** (Ampere ARM), 2 OCPU / 12 GB |
 | SSH keys | Upload your public key, or let Oracle generate one — **save it** |
 
-Stay on **A1.Flex** (ARM): that is the Always Free shape with real capacity.
-The AMD micro shape only has 1 GB RAM, which is tight for Node + sharp.
+**Shape.** Both A1.Flex and E2.1.Micro are Always Free, but E2.1.Micro has
+only **1 GB RAM** — not enough to build the image (two `npm ci` passes plus
+`tsc` get OOM-killed). `setup-vm.sh` adds a 2 GB swap file automatically on
+small instances, which makes the build succeed, but A1.Flex is far more
+comfortable.
 
-> If you get *"Out of host capacity"*, that is Oracle rationing free ARM
-> capacity in your region. Retry later or pick another availability domain —
-> it is not something you configured wrong.
+If you are stuck on E2.1.Micro, there is a shortcut: it is **x86_64**, so it
+can pull the prebuilt image CI already publishes instead of building at all:
+
+```bash
+docker pull ghcr.io/fofana459-2023/revellebeauty-backend:latest
+# then in docker-compose.yml, replace the api service's `build:` block with
+#   image: ghcr.io/fofana459-2023/revellebeauty-backend:latest
+```
+
+A1.Flex is ARM, so it must build locally — CI publishes x86 images only.
+
+**Image.** Oracle Linux is the console default, but Docker's install script
+does not officially support it. `setup-vm.sh` handles both (it falls back to
+the CentOS repo on OL/RHEL), though Ubuntu is the smoother path.
+
+> *"Out of host capacity"* on A1.Flex is Oracle rationing free ARM capacity,
+> not a configuration mistake. Retry later, try another availability domain,
+> or fall back to E2.1.Micro with the swap file.
+
+**Region note:** your Supabase project is in `ap-south-1` (Mumbai). A VM in
+Tokyo adds roughly 100 ms per database round trip. The caching layer absorbs
+most of this — repeat catalog requests serve from memory in ~5 ms — so it is
+acceptable, just not optimal.
 
 ## 2. Provision it
 
