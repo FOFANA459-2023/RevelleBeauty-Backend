@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "revelle-api",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-08-06",
+  "observability": { "enabled": true },
+
+  // The Express server runs inside a container built from ./Dockerfile.
+  // Requires the Workers Paid plan.
+  "containers": [
+    {
+      "class_name": "ApiContainer",
+      "image": "./Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+
+  // Containers are driven by a Durable Object.
+  "durable_objects": {
+    "bindings": [{ "name": "API_CONTAINER", "class_name": "ApiContainer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ApiContainer"] }],
+
+  // Non-secret config. Secrets (DATABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+  // STRIPE_*, ADMIN_PASSWORD_HASH, ADMIN_JWT_SECRET) are set separately with
+  // `wrangler secret put NAME` and must never appear in this file.
+  "vars": {
+    "NODE_ENV": "production",
+    "STORAGE_DRIVER": "supabase",
+    "SUPABASE_STORAGE_BUCKET": "product-images",
+    "STRIPE_CURRENCY": "usd",
+    "ADMIN_SESSION_HOURS": "12",
+    "FRONTEND_URL": "https://revellebeauty.com",
+    "CORS_ORIGINS": "https://revellebeauty.com"
+  }
+}

@@ -50,12 +50,63 @@ Health check path for the host: `/api/health`.
 > quiet spell can take ~30–60s. Fine for launch, worth upgrading before you
 > advertise the store.
 
-## Option B — Cloudflare Containers
+## Option B — Cloudflare Containers (stay on Cloudflare)
 
-Keeps everything on Cloudflare. Requires the **Workers Paid plan** ($5/mo)
-and a small Worker + Durable Object wrapper that forwards requests to a
-container built from the `Dockerfile`. More moving parts than Option A;
-choose it if staying entirely on Cloudflare matters to you.
+**This repo is already configured for it.** `wrangler.jsonc` + `worker/index.ts`
+run the Express server inside a container built from the `Dockerfile`, with a
+Worker forwarding every request to it.
+
+### Prerequisites
+
+1. **Workers Paid plan** ($5/mo minimum) — Containers are not on the free tier.
+2. **Docker installed and running locally** — wrangler builds the image on your
+   machine and pushes it to Cloudflare's registry. (Or let CI do it.)
+3. An API token with **Workers Scripts: Edit**.
+
+### Deploy
+
+```bash
+# 1. Secrets — never in wrangler.jsonc, never in git
+npx wrangler secret put DATABASE_URL                 # Supabase pooler URI
+npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+npx wrangler secret put ADMIN_EMAIL
+npx wrangler secret put ADMIN_PASSWORD_HASH          # bcrypt hash, not plaintext
+npx wrangler secret put ADMIN_JWT_SECRET             # openssl rand -base64 48
+
+# Optional, once you have Stripe:
+npx wrangler secret put STRIPE_SECRET_KEY
+npx wrangler secret put STRIPE_WEBHOOK_SECRET
+
+# 2. Non-secret values live in the "vars" block of wrangler.jsonc —
+#    update FRONTEND_URL / CORS_ORIGINS to your real domain first.
+
+# 3. Ship it
+npx wrangler deploy
+```
+
+Then point the storefront at it (in the **frontend** repo):
+
+```bash
+npx wrangler deploy --var API_ORIGIN:https://revelle-api.<your-subdomain>.workers.dev
+```
+
+### Notes
+
+- The container sleeps after 15 minutes idle (`sleepAfter` in
+  `worker/index.ts`); the next request cold-starts it and re-runs migrations,
+  which is safe because they are forward-only. Raise it if cold starts become
+  noticeable.
+- `max_instances: 1` keeps one warm Postgres pool. To scale, raise it and
+  shard the id in `getContainer(...)`.
+- Container logs: `npx wrangler tail`.
+
+### Launching before Stripe exists
+
+The server boots fine without Stripe keys — it logs a warning and checkout
+returns a clear 503, so you can put a browsable storefront live and add
+payments later. It will **refuse** to boot without `DATABASE_URL`,
+`ADMIN_PASSWORD_HASH`, or `ADMIN_JWT_SECRET`, because running production with
+a default admin secret would let anyone mint an admin session.
 
 ## Required environment variables
 

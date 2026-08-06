@@ -63,15 +63,25 @@ export const isDev = env.NODE_ENV === 'development';
 export const stripeEnabled = Boolean(env.STRIPE_SECRET_KEY);
 
 if (isProd) {
+  // Fatal: without these the server is either broken or insecure (a default
+  // JWT secret in production would let anyone mint an admin session).
   const missing: string[] = [];
   if (!env.DATABASE_URL) missing.push('DATABASE_URL');
-  if (!env.STRIPE_SECRET_KEY) missing.push('STRIPE_SECRET_KEY');
-  if (!env.STRIPE_WEBHOOK_SECRET) missing.push('STRIPE_WEBHOOK_SECRET');
   if (!env.ADMIN_PASSWORD_HASH) missing.push('ADMIN_PASSWORD_HASH');
   if (!env.ADMIN_JWT_SECRET) missing.push('ADMIN_JWT_SECRET');
   if (missing.length) {
     console.error(`Missing required production env vars: ${missing.join(', ')}`);
     process.exit(1);
+  }
+
+  // Non-fatal: the storefront is perfectly useful for browsing before
+  // payments are wired. Checkout returns a clear 503 until these are set,
+  // so a soft launch does not require a Stripe account first.
+  if (!env.STRIPE_SECRET_KEY || !env.STRIPE_WEBHOOK_SECRET) {
+    console.error(
+      '[warn] Stripe is not configured — checkout will return 503. ' +
+        'Set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET to accept payments.',
+    );
   }
 }
 

@@ -9,3 +9,6 @@ tests
 .github
 *.md
 scripts
+worker
+wrangler.jsonc
+render.yaml
