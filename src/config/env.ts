@@ -36,6 +36,7 @@ const schema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_').optional(),
   STRIPE_CURRENCY: z.string().length(3).default('usd'),
 
+  ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD_HASH: z.string().startsWith('$2').optional(),
   /** Dev fallback when no hash is set. NEVER used in production. */
   ADMIN_DEV_PASSWORD: z.string().default('revelle-admin'),
