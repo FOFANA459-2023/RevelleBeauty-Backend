@@ -26,8 +26,8 @@ export async function getPool(): Promise<pg.Pool> {
   pool = new Pool({
     connectionString,
     max: 10,
-    // Supabase requires TLS; local does not. sslmode in the URL wins if present.
-    ssl: connectionString.includes('supabase.co')
+    // Supabase (direct .co and pooler .com hosts) requires TLS; local does not.
+    ssl: /supabase\.(co|com)/.test(connectionString)
       ? { rejectUnauthorized: false }
       : undefined,
   });
