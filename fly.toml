@@ -1,0 +1,58 @@
+# Fly.io deployment — uses the same Dockerfile, no code changes.
+#
+# Chosen over Render because machines can be pinned always-on
+# (auto_stop_machines = false), so there is no cold-start penalty after
+# idle periods.
+#
+#   fly launch --no-deploy --copy-config   # first time, creates the app
+#   fly secrets set DATABASE_URL="..." ...  # see DEPLOY.md for the full list
+#   fly deploy
+
+app = "revelle-api"
+
+# Mumbai — same region as the Supabase project (ap-south-1). Co-locating the
+# API with the database matters: every query is a round trip, and putting
+# them on opposite sides of the world undoes the query work in the caching
+# layer. Change this if you move the database.
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "4000"
+  STORAGE_DRIVER = "supabase"
+  SUPABASE_STORAGE_BUCKET = "product-images"
+  STRIPE_CURRENCY = "usd"
+  ADMIN_SESSION_HOURS = "12"
+  # Update these to your real domain before going live.
+  FRONTEND_URL = "https://revellebeauty.com"
+  CORS_ORIGINS = "https://revellebeauty.com"
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  # THE POINT: never suspend. Cold starts are what you disliked about Render.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+# Fly restarts the machine if this fails, so a wedged process self-heals.
+[[http_service.checks]]
+  grace_period = "20s"
+  interval = "30s"
+  method = "GET"
+  path = "/api/health"
+  timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # sharp + the pg pool are comfortable here; 256mb is tight.
+  memory = "512mb"
+  cpus = 1

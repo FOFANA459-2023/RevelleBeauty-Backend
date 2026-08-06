@@ -26,16 +26,48 @@ Porting it would mean rewriting to Hono + Hyperdrive + Cloudflare Images —
 a rewrite, not a config change. **Disconnect this repo from Cloudflare
 Workers Builds** and use one of the options below.
 
-## Option A — a Node/container host (recommended)
+## Option A — a Node/container host
 
-Any of Render, Railway, Fly.io, or Koyeb. The repo ships two artifacts so
-you're not locked in:
+The `Dockerfile` is the portable artifact (multi-stage, production-only deps,
+non-root). It runs anywhere. Three configs ship in this repo:
 
-- **`Dockerfile`** — multi-stage, production-only deps, runs as non-root.
-  Works on any Docker host.
-- **`render.yaml`** — a ready blueprint if you use Render (has a free tier).
-  On Render: **New → Blueprint → pick this repo**, then fill in the prompted
-  secrets. Nothing sensitive lives in the file.
+| File | Host | Sleeps when idle? |
+|---|---|---|
+| `fly.toml` | Fly.io | **No** — `auto_stop_machines = false` |
+| `render.yaml` | Render | Yes, on the free plan (~30–60s cold start) |
+| `wrangler.jsonc` | Cloudflare Containers | No (needs Workers Paid) |
+
+### Fly.io (no cold starts)
+
+```bash
+fly launch --no-deploy --copy-config    # creates the app from fly.toml
+fly secrets set \
+  DATABASE_URL="postgresql://..." \
+  SUPABASE_SERVICE_ROLE_KEY="..." \
+  ADMIN_EMAIL="..." \
+  ADMIN_PASSWORD_HASH='$2b$12$...' \
+  ADMIN_JWT_SECRET="$(openssl rand -base64 48)" \
+  SUPABASE_URL="https://<ref>.supabase.co"
+fly deploy
+```
+
+`fly.toml` pins the app to **Mumbai (`bom`)** to match the Supabase project's
+region. Keep the API and database in the same region — every request is
+several round trips, and splitting them across continents undoes the query
+optimisation work.
+
+Non-secret values live in the `[env]` block; secrets go through
+`fly secrets set` and are never committed.
+
+### Other hosts
+
+Koyeb, Railway, and Google Cloud Run all take the same Dockerfile. Cloud Run
+scales to zero but resumes in ~1–2s (not Render's ~30–60s). Oracle Cloud's
+Always Free ARM VMs never sleep and cost nothing indefinitely, at the price
+of managing the VM yourself.
+
+> Free-tier terms change frequently. Verify current limits before committing
+> to a host.
 
 CI already publishes an image to GHCR on every green `main`:
 
@@ -44,11 +76,7 @@ ghcr.io/fofana459-2023/revellebeauty-backend:latest
 ghcr.io/fofana459-2023/revellebeauty-backend:<git sha>
 ```
 
-Health check path for the host: `/api/health`.
-
-> Free tiers usually sleep after inactivity, so the first request after a
-> quiet spell can take ~30–60s. Fine for launch, worth upgrading before you
-> advertise the store.
+Health check path for any host: `/api/health`.
 
 ## Option B — Cloudflare Containers (stay on Cloudflare)
 
