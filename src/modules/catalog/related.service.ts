@@ -109,9 +109,14 @@ export async function getRelatedProductIds(
   slug: string,
   limit: number,
 ): Promise<ScoredCandidate[]> {
-  const { rows } = await pool.query<CandidateRow>(`
+  // ONE round trip: candidates + source marker + per-candidate co-purchase
+  // count against the source product, all in a single statement (the DB is
+  // remote — sequential queries cost real latency).
+  const { rows } = await pool.query<CandidateRow & { is_source: boolean; co_orders: string }>(`
+    with src as (select id from products where slug = $1 and status = 'active')
     select p.id, p.category_id, c.parent_id as parent_category_id,
            p.base_price_cents, p.is_featured, p.display_order, p.name, p.tagline,
+           (p.id = (select id from src)) as is_source,
            exists (
              select 1 from product_variants v
               where v.product_id = p.id and v.is_available
@@ -120,35 +125,24 @@ export async function getRelatedProductIds(
            (select array_agg(v.hex_color) from product_variants v
              where v.product_id = p.id and v.hex_color is not null) as hexes,
            (select array_agg(distinct v.finish) from product_variants v
-             where v.product_id = p.id and v.finish is not null) as finishes
+             where v.product_id = p.id and v.finish is not null) as finishes,
+           (select count(distinct oi1.order_id)
+              from order_items oi1
+              join order_items oi2 on oi2.order_id = oi1.order_id
+              join orders o on o.id = oi1.order_id
+             where oi1.product_id = (select id from src)
+               and oi2.product_id = p.id
+               and o.payment_status = 'paid'
+           ) as co_orders
       from products p
       join categories c on c.id = p.category_id
      where p.status = 'active'
-  `);
+  `, [slug]);
 
-  const { rows: srcRows } = await pool.query<{ id: string }>(
-    `select id from products where slug = $1 and status = 'active'`,
-    [slug],
-  );
-  const sourceId = srcRows[0]?.id;
-  if (!sourceId) throw notFound('Product not found');
-  const src = rows.find((r) => r.id === sourceId)!;
-
-  // Co-purchase counts: how often each candidate appears in the same PAID
-  // order as the source product.
-  const { rows: coRows } = await pool.query<{ product_id: string; n: string }>(
-    `select oi2.product_id, count(distinct oi2.order_id) as n
-       from order_items oi1
-       join order_items oi2 on oi2.order_id = oi1.order_id
-                           and oi2.product_id <> oi1.product_id
-       join orders o on o.id = oi1.order_id
-      where oi1.product_id = $1
-        and o.payment_status = 'paid'
-        and oi2.product_id is not null
-      group by oi2.product_id`,
-    [sourceId],
-  );
-  const coPurchase = new Map(coRows.map((r) => [r.product_id, Number(r.n)]));
+  const src = rows.find((r) => r.is_source);
+  if (!src) throw notFound('Product not found');
+  const sourceId = src.id;
+  const coPurchase = new Map(rows.map((r) => [r.id, Number(r.co_orders)]));
 
   const srcTokens = tokens(src.name, src.tagline);
   const srcHexes = src.hexes ?? [];

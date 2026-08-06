@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Pool } from 'pg';
 import * as svc from './catalog.service.js';
 import { getRelatedProductIds } from './related.service.js';
+import { cached } from '../../lib/cache.js';
 
 const listQuerySchema = z.object({
   category: z.string().regex(/^[a-z0-9-]+$/).optional(),
@@ -41,17 +42,21 @@ export function catalogRoutes(pool: Pool): Router {
 
   r.get('/products/:slug/related', async (req, res) => {
     const limit = z.coerce.number().int().min(1).max(12).default(4).parse(req.query.limit);
-    const scored = await getRelatedProductIds(pool, req.params.slug, limit);
-    const products = await svc.getProductSummariesByIds(
-      pool,
-      scored.map((s) => s.productId),
+    const payload = await cached(
+      `catalog:related:${req.params.slug}:${limit}`,
+      2 * 60_000,
+      async () => {
+        const scored = await getRelatedProductIds(pool, req.params.slug, limit);
+        const products = await svc.getProductSummariesByIds(
+          pool,
+          scored.map((s) => s.productId),
+        );
+        // score + human-readable reasons ride along for UI badges/debugging
+        return { products, meta: scored };
+      },
     );
     res.set('Cache-Control', CACHE);
-    res.json({
-      products,
-      // score + human-readable reasons ride along for UI badges/debugging
-      meta: scored,
-    });
+    res.json(payload);
   });
 
   r.get('/settings', async (_req, res) => {

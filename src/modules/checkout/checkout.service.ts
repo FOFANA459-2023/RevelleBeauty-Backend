@@ -10,6 +10,7 @@ import { env, isDev, stripeEnabled } from '../../config/env.js';
 import { badRequest, conflict, notFound, unavailable } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import { storage } from '../../lib/storage.js';
+import { invalidateCatalog } from '../../lib/cache.js';
 import { priceCart, type PricedLine } from './pricing.service.js';
 import { getSettings } from '../catalog/catalog.service.js';
 
@@ -223,6 +224,8 @@ export async function markOrderPaid(
     d.amountTotalCents,
     d.raw ? JSON.stringify(d.raw) : null,
   ]);
+  // Stock just changed — refresh the public catalog (inStock flags).
+  invalidateCatalog();
 }
 
 /* ---------- confirmation (success page) ---------- */

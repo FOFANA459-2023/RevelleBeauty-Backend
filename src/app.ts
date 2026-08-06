@@ -9,6 +9,24 @@ import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { UPLOADS_DIR } from './lib/storage.js';
 import { globalLimiter, checkoutLimiter } from './middleware/rateLimit.js';
+import { invalidateCatalog } from './lib/cache.js';
+import type { NextFunction, Request, Response } from 'express';
+
+/** Personal/sensitive responses: forbid any browser or intermediary caching. */
+function noStore(_req: Request, res: Response, next: NextFunction): void {
+  res.set('Cache-Control', 'private, no-store');
+  next();
+}
+
+/** After any successful admin write, drop the public catalog cache. */
+function invalidateOnWrite(req: Request, res: Response, next: NextFunction): void {
+  if (req.method !== 'GET') {
+    res.on('finish', () => {
+      if (res.statusCode < 400) invalidateCatalog();
+    });
+  }
+  next();
+}
 import { requireAdmin } from './middleware/requireAdmin.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { catalogRoutes } from './modules/catalog/catalog.routes.js';
@@ -58,14 +76,18 @@ export function buildApp(pool: Pool): express.Express {
   api.use(globalLimiter);
 
   api.use(catalogRoutes(pool));
+  api.use('/checkout', noStore); // order/session payloads are personal
   api.use('/checkout/session', checkoutLimiter);
   api.use(checkoutRoutes(pool));
 
-  // Customer accounts (shopper-facing).
-  api.use('/auth', customerAuthRoutes(pool));
-  api.use('/account', accountRoutes(pool));
+  // Customer accounts (shopper-facing): personal data — never cacheable.
+  api.use('/auth', noStore, customerAuthRoutes(pool));
+  api.use('/account', noStore, accountRoutes(pool));
 
   // Admin: auth routes first (login is public + limited), then the guard.
+  // Admin responses are sensitive (never cached); admin writes drop the
+  // public catalog cache so storefront changes appear immediately.
+  api.use('/admin', noStore, invalidateOnWrite);
   api.use('/admin', adminAuthRoutes());
   api.use('/admin', requireAdmin, adminProductRoutes(pool));
   api.use('/admin', requireAdmin, adminImageRoutes(pool));

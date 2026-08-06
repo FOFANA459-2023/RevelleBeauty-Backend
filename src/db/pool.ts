@@ -26,6 +26,12 @@ export async function getPool(): Promise<pg.Pool> {
   pool = new Pool({
     connectionString,
     max: 10,
+    // Remote DB: keep connections warm. The pg default drops idle clients
+    // after 10s, so every quiet minute made the next request pay a fresh
+    // TLS + auth handshake to the pooler. Hold them for 10 minutes instead.
+    idleTimeoutMillis: 10 * 60_000,
+    keepAlive: true,
+    connectionTimeoutMillis: 10_000,
     // Supabase (direct .co and pooler .com hosts) requires TLS; local does not.
     ssl: /supabase\.(co|com)/.test(connectionString)
       ? { rejectUnauthorized: false }
