@@ -1,0 +1,19 @@
+node_modules/
+dist/
+
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Local/test databases
+.pgdata/
+.pgdata-test/
+tests/.test-db-url
+
+# Local image storage
+uploads/
+
+*.log
+.DS_Store
+Thumbs.db

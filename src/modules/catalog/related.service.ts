@@ -51,7 +51,7 @@ interface CandidateRow {
  * CIE deltaE that respects human sensitivity per channel. Range ~0–765.
  * Good enough to say "Rose Elixir is near Velvet Mauve" without a color lib.
  */
-function colorDistance(hexA: string, hexB: string): number {
+export function colorDistance(hexA: string, hexB: string): number {
   const a = parseInt(hexA.slice(1), 16);
   const b = parseInt(hexB.slice(1), 16);
   const rA = (a >> 16) & 255, gA = (a >> 8) & 255, bA = a & 255;
@@ -67,7 +67,7 @@ function colorDistance(hexA: string, hexB: string): number {
  * Palette similarity between two shade sets: average of each set's best match
  * into the other (symmetric chamfer distance), mapped to 0..1.
  */
-function paletteSimilarity(hexesA: string[], hexesB: string[]): number {
+export function paletteSimilarity(hexesA: string[], hexesB: string[]): number {
   if (hexesA.length === 0 || hexesB.length === 0) return 0;
   const best = (from: string[], to: string[]) =>
     from.reduce((sum, h) => sum + Math.min(...to.map((o) => colorDistance(h, o))), 0) /

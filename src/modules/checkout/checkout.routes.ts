@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Pool } from 'pg';
-import { env, isDev, stripeEnabled } from '../../config/env.js';
+import { env, isProd, stripeEnabled } from '../../config/env.js';
 import { badRequest, notFound } from '../../lib/errors.js';
 import { customerId, requireCustomer } from '../../middleware/requireCustomer.js';
 import * as svc from './checkout.service.js';
@@ -86,7 +86,8 @@ export function checkoutRoutes(pool: Pool): Router {
   });
 
   // ---- Dev-only mock payment (no Stripe keys configured) ----
-  if (isDev && !stripeEnabled) {
+  // Mock payments exist only outside production (dev + test).
+  if (!isProd && !stripeEnabled) {
     r.post('/checkout/mock-pay', async (req, res) => {
       const body = z
         .object({

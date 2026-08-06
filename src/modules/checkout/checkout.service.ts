@@ -6,12 +6,12 @@ import type {
   OrderConfirmation,
   OrderConfirmationResponse,
 } from '@contracts/index';
-import { env, isDev, stripeEnabled } from '../../config/env.js';
+import { env, isProd, stripeEnabled } from '../../config/env.js';
 import { badRequest, conflict, notFound, unavailable } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import { storage } from '../../lib/storage.js';
 import { invalidateCatalog } from '../../lib/cache.js';
-import { priceCart, type PricedLine } from './pricing.service.js';
+import { priceCart } from './pricing.service.js';
 import { getSettings } from '../catalog/catalog.service.js';
 
 export const stripe = stripeEnabled
@@ -120,7 +120,7 @@ export async function createCheckoutSession(
   if (!stripe) {
     // Dev mock mode: no Stripe keys yet. The frontend redirects to a local
     // mock-payment page which then calls POST /api/checkout/mock-pay.
-    if (!isDev) throw unavailable('Payments are not configured');
+    if (isProd) throw unavailable('Payments are not configured');
     const sessionId = `mock_${orderId}`;
     await pool.query(`update orders set stripe_checkout_session_id = $1 where id = $2`, [
       sessionId, orderId,
