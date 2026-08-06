@@ -1,0 +1,56 @@
+# Oracle Cloud (Always Free ARM) deployment.
+#
+#   docker compose up -d --build
+#
+# Two networking modes:
+#   A. Cloudflare Tunnel (recommended) — cloudflared dials OUT to Cloudflare,
+#      so the VM needs zero open inbound ports and gets TLS for free.
+#      Requires a domain on your Cloudflare account.
+#   B. Direct IP (fallback, no domain) — uncomment the `ports` block on the
+#      api service and open the port in Oracle's Security List + iptables.
+#      See setup-vm.sh. The Cloudflare→VM hop is then UNENCRYPTED; use this
+#      for testing only, never for real customer orders.
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    # Mode A: internal only — cloudflared reaches it over the compose network.
+    expose:
+      - '4000'
+    # Mode B: uncomment to expose directly on the VM's public IP.
+    # ports:
+    #   - '4000:4000'
+    healthcheck:
+      # Exec form (not CMD-SHELL) so there is no shell quoting to get wrong.
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  # Mode A only. Comment this out if using direct IP.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
