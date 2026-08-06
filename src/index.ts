@@ -2,10 +2,12 @@ import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { getPool, closePool } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
+import { seedAdminUser } from './db/seed-admin.js';
 import { buildApp } from './app.js';
 
 const pool = await getPool();
 await runMigrations(pool);
+await seedAdminUser(pool);
 
 const app = buildApp(pool);
 const server = app.listen(env.PORT, () => {

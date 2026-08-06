@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Pool } from 'pg';
 import { notFound } from '../../lib/errors.js';
 import { storage } from '../../lib/storage.js';
-import { customerId, requireCustomer } from '../../middleware/requireCustomer.js';
+import { customerId, requireCustomer } from '../../middleware/auth.js';
 
 export function accountRoutes(pool: Pool): Router {
   const r = Router();

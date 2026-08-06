@@ -6,8 +6,11 @@ let app: Express;
 
 beforeAll(async () => {
   const { getPool } = await import('../../src/db/pool.js');
+  const { seedAdminUser } = await import('../../src/db/seed-admin.js');
   const { buildApp } = await import('../../src/app.js');
-  app = buildApp(await getPool());
+  const pool = await getPool();
+  await seedAdminUser(pool);
+  app = buildApp(pool);
 });
 
 describe('security posture', () => {
@@ -29,7 +32,7 @@ describe('security posture', () => {
     expect((await request(app).get('/api/auth/me')).status).toBe(401);
   });
 
-  it('a CUSTOMER token cannot open ADMIN endpoints (audience separation)', async () => {
+  it('a CUSTOMER session cannot open ADMIN endpoints (role separation)', async () => {
     const reg = await request(app).post('/api/auth/register').send({
       email: 'audsep@test.local',
       password: 'password123',
@@ -38,21 +41,30 @@ describe('security posture', () => {
     const cookie = (reg.headers['set-cookie'] as unknown as string[])
       .map((c) => c.split(';')[0])
       .join('; ');
-    // Present the customer JWT as if it were the admin cookie.
-    const token = cookie.split('rb_customer=')[1] ?? '';
-    const res = await request(app)
-      .get('/api/admin/products')
-      .set('Cookie', `rb_admin=${token}`);
-    expect(res.status).toBe(401);
+    const res = await request(app).get('/api/admin/products').set('Cookie', cookie);
+    expect(res.status).toBe(403);
   });
 
-  it('admin login rejects wrong email and wrong password alike', async () => {
+  it('an ADMIN session opens both admin and account endpoints', async () => {
+    const login = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'admin@test.local', password: 'test-admin-pass' });
+    expect(login.status).toBe(200);
+    expect(login.body.customer.role).toBe('admin');
+    const cookie = (login.headers['set-cookie'] as unknown as string[])
+      .map((c) => c.split(';')[0])
+      .join('; ');
+    expect((await request(app).get('/api/admin/products').set('Cookie', cookie)).status).toBe(200);
+    expect((await request(app).get('/api/auth/me').set('Cookie', cookie)).status).toBe(200);
+  });
+
+  it('login rejects wrong email and wrong password alike', async () => {
     expect(
-      (await request(app).post('/api/admin/login')
+      (await request(app).post('/api/auth/login')
         .send({ email: 'admin@test.local', password: 'nope' })).status,
     ).toBe(401);
     expect(
-      (await request(app).post('/api/admin/login')
+      (await request(app).post('/api/auth/login')
         .send({ email: 'wrong@test.local', password: 'test-admin-pass' })).status,
     ).toBe(401);
   });

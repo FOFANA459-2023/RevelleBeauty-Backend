@@ -27,14 +27,13 @@ function invalidateOnWrite(req: Request, res: Response, next: NextFunction): voi
   }
   next();
 }
-import { requireAdmin } from './middleware/requireAdmin.js';
+import { requireAdmin } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { catalogRoutes } from './modules/catalog/catalog.routes.js';
 import { checkoutRoutes } from './modules/checkout/checkout.routes.js';
 import { customerAuthRoutes } from './modules/customers/customer.auth.routes.js';
 import { accountRoutes } from './modules/customers/account.routes.js';
 import { stripeWebhookRoutes } from './modules/webhooks/stripe.webhook.js';
-import { adminAuthRoutes } from './modules/admin/auth.routes.js';
 import { adminProductRoutes } from './modules/admin/products.routes.js';
 import { adminImageRoutes } from './modules/admin/images.routes.js';
 import { adminCategoryRoutes } from './modules/admin/categories.routes.js';
@@ -80,15 +79,15 @@ export function buildApp(pool: Pool): express.Express {
   api.use('/checkout/session', checkoutLimiter);
   api.use(checkoutRoutes(pool));
 
-  // Customer accounts (shopper-facing): personal data — never cacheable.
+  // Unified auth: customers AND admins sign in at /auth/login; the session's
+  // role claim decides what it may reach. Personal data — never cacheable.
   api.use('/auth', noStore, customerAuthRoutes(pool));
   api.use('/account', noStore, accountRoutes(pool));
 
-  // Admin: auth routes first (login is public + limited), then the guard.
-  // Admin responses are sensitive (never cached); admin writes drop the
-  // public catalog cache so storefront changes appear immediately.
+  // Admin: every route requires a role=admin session — there is no separate
+  // admin login. Admin responses are sensitive (never cached); admin writes
+  // drop the public catalog cache so storefront changes appear immediately.
   api.use('/admin', noStore, invalidateOnWrite);
-  api.use('/admin', adminAuthRoutes());
   api.use('/admin', requireAdmin, adminProductRoutes(pool));
   api.use('/admin', requireAdmin, adminImageRoutes(pool));
   api.use('/admin', requireAdmin, adminCategoryRoutes(pool));

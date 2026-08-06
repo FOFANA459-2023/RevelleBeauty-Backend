@@ -2,17 +2,6 @@ import type { Money } from './common';
 import type { ImageDTO, ProductStatus } from './product';
 import type { OrderStatus, PaymentStatus } from './order';
 
-export interface AdminSession {
-  admin: true;
-  email: string | null;
-  expiresAt: string;
-}
-
-export interface AdminLoginBody {
-  email: string;
-  password: string;
-}
-
 /* ---------- Categories ---------- */
 
 export interface AdminCategoryDTO {

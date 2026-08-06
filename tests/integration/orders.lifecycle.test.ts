@@ -34,8 +34,11 @@ function cookieOf(res: request.Response): string {
 
 beforeAll(async () => {
   const { getPool } = await import('../../src/db/pool.js');
+  const { seedAdminUser } = await import('../../src/db/seed-admin.js');
   const { buildApp } = await import('../../src/app.js');
-  app = buildApp(await getPool());
+  const pool = await getPool();
+  await seedAdminUser(pool);
+  app = buildApp(pool);
 });
 
 describe('order lifecycle', () => {
@@ -136,9 +139,10 @@ describe('order lifecycle', () => {
 
   it('admin signs in and advances the pipeline', async () => {
     const login = await request(app)
-      .post('/api/admin/login')
+      .post('/api/auth/login')
       .send({ email: 'admin@test.local', password: 'test-admin-pass' });
     expect(login.status).toBe(200);
+    expect(login.body.customer.role).toBe('admin');
     adminCookie = cookieOf(login);
 
     for (const stage of ['packaged', 'shipped']) {

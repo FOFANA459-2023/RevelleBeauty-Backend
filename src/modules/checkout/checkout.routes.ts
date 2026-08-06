@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Pool } from 'pg';
 import { env, isProd, stripeEnabled } from '../../config/env.js';
 import { badRequest, notFound } from '../../lib/errors.js';
-import { customerId, requireCustomer } from '../../middleware/requireCustomer.js';
+import { customerId, requireCustomer } from '../../middleware/auth.js';
 import * as svc from './checkout.service.js';
 import { validateCart } from './pricing.service.js';
 

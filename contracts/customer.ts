@@ -17,10 +17,13 @@ export interface CustomerAddress {
   country: string;
 }
 
+export type UserRole = 'customer' | 'admin';
+
 export interface CustomerProfile {
   id: string;
   email: string;
   name: string;
+  role: UserRole;
   phone: string | null;
   address: CustomerAddress | null;
 }

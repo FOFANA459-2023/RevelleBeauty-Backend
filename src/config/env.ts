@@ -38,7 +38,13 @@ const schema = z.object({
 
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD_HASH: z.string().startsWith('$2').optional(),
-  /** Dev fallback when no hash is set. NEVER used in production. */
+  /**
+   * Plaintext alternative to ADMIN_PASSWORD_HASH — hashed at boot when the
+   * admin user is seeded. Preferred on servers: bcrypt hashes contain '$',
+   * which docker-compose env files interpolate and silently corrupt.
+   */
+  ADMIN_PASSWORD: z.string().min(8).optional(),
+  /** Dev fallback when no hash/password is set. NEVER used in production. */
   ADMIN_DEV_PASSWORD: z.string().default('revelle-admin'),
   ADMIN_JWT_SECRET: z.string().min(32).optional(),
   ADMIN_SESSION_HOURS: z.coerce.number().int().min(1).max(168).default(12),
@@ -67,7 +73,9 @@ if (isProd) {
   // JWT secret in production would let anyone mint an admin session).
   const missing: string[] = [];
   if (!env.DATABASE_URL) missing.push('DATABASE_URL');
-  if (!env.ADMIN_PASSWORD_HASH) missing.push('ADMIN_PASSWORD_HASH');
+  if (!env.ADMIN_EMAIL) missing.push('ADMIN_EMAIL');
+  if (!env.ADMIN_PASSWORD_HASH && !env.ADMIN_PASSWORD)
+    missing.push('ADMIN_PASSWORD (or ADMIN_PASSWORD_HASH)');
   if (!env.ADMIN_JWT_SECRET) missing.push('ADMIN_JWT_SECRET');
   if (missing.length) {
     console.error(`Missing required production env vars: ${missing.join(', ')}`);

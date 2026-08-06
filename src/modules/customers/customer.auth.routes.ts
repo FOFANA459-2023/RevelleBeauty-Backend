@@ -6,13 +6,13 @@ import { env, isProd } from '../../config/env.js';
 import { badRequest, conflict, notFound, unauthorized } from '../../lib/errors.js';
 import { loginLimiter } from '../../middleware/rateLimit.js';
 import {
-  CUSTOMER_COOKIE,
+  SESSION_COOKIE,
   customerId,
   requireCustomer,
-  signCustomerToken,
-} from '../../middleware/requireCustomer.js';
-
-const SESSION_DAYS = 30;
+  sessionSeconds,
+  signSessionToken,
+  type Role,
+} from '../../middleware/auth.js';
 
 const addressSchema = z.object({
   line1: z.string().trim().min(1).max(200),
@@ -49,6 +49,7 @@ interface CustomerRow {
   email: string;
   password_hash: string;
   name: string;
+  role: Role;
   phone: string | null;
   addr_line1: string | null;
   addr_line2: string | null;
@@ -63,6 +64,7 @@ function toProfile(c: CustomerRow) {
     id: c.id,
     email: c.email,
     name: c.name,
+    role: c.role,
     phone: c.phone,
     address: c.addr_line1
       ? {
@@ -77,13 +79,14 @@ function toProfile(c: CustomerRow) {
   };
 }
 
-function setSessionCookie(res: import('express').Response, token: string): void {
-  res.cookie(CUSTOMER_COOKIE, token, {
+function startSession(res: import('express').Response, row: CustomerRow): void {
+  const expiresInSec = sessionSeconds(row.role);
+  res.cookie(SESSION_COOKIE, signSessionToken(row.id, row.role, expiresInSec), {
     httpOnly: true,
     secure: isProd,
     sameSite: 'lax',
     path: '/api',
-    maxAge: SESSION_DAYS * 24 * 3600 * 1000,
+    maxAge: expiresInSec * 1000,
   });
 }
 
@@ -94,7 +97,7 @@ export function customerAuthRoutes(pool: Pool): Router {
     const body = registerSchema.parse(req.body);
     const email = body.email.trim().toLowerCase();
 
-    // Guard the admin identity from being registered as a shopper account.
+    // The admin identity is seeded at boot — never claimable via registration.
     if (env.ADMIN_EMAIL && email === env.ADMIN_EMAIL.toLowerCase()) {
       throw badRequest('This email cannot be used');
     }
@@ -115,7 +118,7 @@ export function customerAuthRoutes(pool: Pool): Router {
       throw err;
     }
 
-    setSessionCookie(res, signCustomerToken(row.id, SESSION_DAYS * 24 * 3600));
+    startSession(res, row);
     res.status(201).json({ customer: toProfile(row) });
   });
 
@@ -131,12 +134,15 @@ export function customerAuthRoutes(pool: Pool): Router {
     const ok = await bcrypt.compare(password, hash);
     if (!row || !ok) throw unauthorized('Invalid email or password');
 
-    setSessionCookie(res, signCustomerToken(row.id, SESSION_DAYS * 24 * 3600));
+    startSession(res, row);
     res.json({ customer: toProfile(row) });
   });
 
   r.post('/logout', (_req, res) => {
-    res.clearCookie(CUSTOMER_COOKIE, { path: '/api' });
+    res.clearCookie(SESSION_COOKIE, { path: '/api' });
+    // Pre-unification cookies — clear so stale sessions can't linger.
+    res.clearCookie('rb_customer', { path: '/api' });
+    res.clearCookie('rb_admin', { path: '/api/admin' });
     res.json({ ok: true });
   });
 
