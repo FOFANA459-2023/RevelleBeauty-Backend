@@ -56,6 +56,25 @@ Health check path for the host: `/api/health`.
 run the Express server inside a container built from the `Dockerfile`, with a
 Worker forwarding every request to it.
 
+### Troubleshooting: image builds, then `✘ [ERROR] Unauthorized`
+
+If the log shows the Docker image building all the way through, the Worker
+uploading, and *then* `Unauthorized`, the failure is at the final step —
+**pushing the image to Cloudflare's container registry**. Two causes, in
+order of likelihood:
+
+1. **The account is not on the Workers Paid plan.** Containers require it.
+   Everything up to the registry push works on a free account, which makes
+   this failure look like a permissions bug rather than a billing one.
+   Check: Dashboard → Workers & Pages → Plans.
+2. **The build token lacks container registry access.** If you are already on
+   Workers Paid, regenerate the Workers Builds token
+   (project → Settings → Build → Build token) or deploy from your machine
+   with a token that has **Workers Scripts: Edit**.
+
+If neither applies, deploy locally with `npx wrangler deploy` — the error
+message there is usually more specific than the CI one.
+
 ### Prerequisites
 
 1. **Workers Paid plan** ($5/mo minimum) — Containers are not on the free tier.

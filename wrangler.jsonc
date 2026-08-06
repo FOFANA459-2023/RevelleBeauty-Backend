@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "revelle-api",
+  // Must match the Cloudflare Workers Builds project name, which defaults to
+  // the repo name. A mismatch makes CI override it and warn on every build.
+  "name": "revellebeauty-backend",
   "main": "worker/index.ts",
   "compatibility_date": "2026-08-06",
   "observability": { "enabled": true },
