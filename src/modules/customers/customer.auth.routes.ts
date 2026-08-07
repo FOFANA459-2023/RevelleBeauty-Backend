@@ -118,6 +118,14 @@ export function customerAuthRoutes(pool: Pool): Router {
       throw err;
     }
 
+    // Welcome message: the inbox should never be empty on first visit.
+    await pool.query(
+      `insert into customer_messages (customer_id, kind, title, body)
+       values ($1, 'welcome', 'Welcome to Revelle',
+               'Your account is ready. Order updates and tracking news will land here — be you, be bold, be Revelle.')`,
+      [row.id],
+    );
+
     startSession(res, row);
     res.status(201).json({ customer: toProfile(row) });
   });

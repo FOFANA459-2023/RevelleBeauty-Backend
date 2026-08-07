@@ -57,6 +57,21 @@ export interface ShippingInput {
   country: string;
 }
 
+export interface CustomerMessageDTO {
+  id: string;
+  orderId: string | null;
+  kind: 'welcome' | 'order' | 'tracking';
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface MessagesResponse {
+  messages: CustomerMessageDTO[];
+  unreadCount: number;
+}
+
 export interface OrderEventDTO {
   id: string;
   stage: FulfillmentStage | null;

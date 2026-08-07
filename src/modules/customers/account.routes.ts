@@ -103,6 +103,42 @@ export function accountRoutes(pool: Pool): Router {
     });
   });
 
+  // ---------- messages: the customer inbox ----------
+  // Auto-populated (welcome + one per order event via DB trigger); read
+  // state lives server-side so it survives logout and other devices.
+
+  r.get('/messages', async (req, res) => {
+    const { rows } = await pool.query(
+      `select id, order_id, kind, title, body, created_at, read_at
+         from customer_messages
+        where customer_id = $1
+        order by created_at desc
+        limit 100`,
+      [customerId(req)],
+    );
+    res.json({
+      messages: rows.map((m) => ({
+        id: m.id,
+        orderId: m.order_id,
+        kind: m.kind,
+        title: m.title,
+        body: m.body,
+        createdAt: m.created_at,
+        readAt: m.read_at,
+      })),
+      unreadCount: rows.filter((m) => !m.read_at).length,
+    });
+  });
+
+  r.post('/messages/read', async (req, res) => {
+    await pool.query(
+      `update customer_messages set read_at = now()
+        where customer_id = $1 and read_at is null`,
+      [customerId(req)],
+    );
+    res.json({ ok: true });
+  });
+
   // Customer confirms delivery — reflects back to the admin timeline.
   r.post('/orders/:id/confirm-delivery', async (req, res) => {
     const client = await pool.connect();
