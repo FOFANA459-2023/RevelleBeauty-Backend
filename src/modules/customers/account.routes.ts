@@ -1,8 +1,22 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import type { Pool } from 'pg';
 import { notFound } from '../../lib/errors.js';
 import { storage } from '../../lib/storage.js';
 import { customerId, requireCustomer } from '../../middleware/auth.js';
+
+const cartPutSchema = z
+  .object({
+    items: z
+      .array(
+        z.object({
+          variantId: z.string().uuid(),
+          quantity: z.number().int().min(1).max(99),
+        }).strict(),
+      )
+      .max(40),
+  })
+  .strict();
 
 export function accountRoutes(pool: Pool): Router {
   const r = Router();
@@ -101,6 +115,44 @@ export function accountRoutes(pool: Pool): Router {
         })),
       },
     });
+  });
+
+  // ---------- cart: the bag follows the customer across devices ----------
+
+  r.get('/cart', async (req, res) => {
+    const { rows } = await pool.query(
+      `select variant_id, quantity from cart_items
+        where customer_id = $1 order by updated_at`,
+      [customerId(req)],
+    );
+    res.json({ items: rows.map((c) => ({ variantId: c.variant_id, quantity: c.quantity })) });
+  });
+
+  r.put('/cart', async (req, res) => {
+    const { items } = cartPutSchema.parse(req.body);
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(`delete from cart_items where customer_id = $1`, [customerId(req)]);
+      if (items.length) {
+        // Join against product_variants so stale/deleted variants are
+        // silently dropped instead of failing the whole write.
+        await client.query(
+          `insert into cart_items (customer_id, variant_id, quantity)
+           select $1, v.id, x.quantity
+             from unnest($2::uuid[], $3::int[]) as x(variant_id, quantity)
+             join product_variants v on v.id = x.variant_id`,
+          [customerId(req), items.map((i) => i.variantId), items.map((i) => i.quantity)],
+        );
+      }
+      await client.query('commit');
+      res.json({ ok: true });
+    } catch (err) {
+      await client.query('rollback');
+      throw err;
+    } finally {
+      client.release();
+    }
   });
 
   // ---------- messages: the customer inbox ----------

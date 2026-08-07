@@ -203,6 +203,44 @@ describe('order lifecycle', () => {
     expect(orderTitles.length).toBe(0);
   });
 
+  it('the server-side cart follows the customer across devices', async () => {
+    // "Device A" saves a bag.
+    const put = await request(app)
+      .put('/api/account/cart')
+      .set('Cookie', customerCookie)
+      .send({ items: [{ variantId, quantity: 3 }] });
+    expect(put.status).toBe(200);
+
+    // "Device B" (fresh login, no local state) sees the same bag.
+    const login = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'runner@test.local', password: 'password123' });
+    const deviceB = cookieOf(login);
+    const got = await request(app).get('/api/account/cart').set('Cookie', deviceB);
+    expect(got.status).toBe(200);
+    expect(got.body.items).toEqual([{ variantId, quantity: 3 }]);
+
+    // Stale variant ids are dropped silently, not an error.
+    const withGhost = await request(app)
+      .put('/api/account/cart')
+      .set('Cookie', deviceB)
+      .send({ items: [
+        { variantId, quantity: 1 },
+        { variantId: '00000000-0000-0000-0000-000000000000', quantity: 2 },
+      ] });
+    expect(withGhost.status).toBe(200);
+    const after = await request(app).get('/api/account/cart').set('Cookie', deviceB);
+    expect(after.body.items).toEqual([{ variantId, quantity: 1 }]);
+  });
+
+  it("SECURITY: another customer's cart is invisible", async () => {
+    const other = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'stranger@test.local', password: 'password123' });
+    const res = await request(app).get('/api/account/cart').set('Cookie', cookieOf(other));
+    expect(res.body.items).toEqual([]);
+  });
+
   it('cart validation reports authoritative prices', async () => {
     const res = await request(app)
       .post('/api/cart/validate')
