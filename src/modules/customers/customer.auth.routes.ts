@@ -119,11 +119,15 @@ export function customerAuthRoutes(pool: Pool): Router {
     }
 
     // Welcome message: the inbox should never be empty on first visit.
+    const firstName = row.name.trim().split(/\s+/)[0] ?? 'there';
     await pool.query(
       `insert into customer_messages (customer_id, kind, title, body)
-       values ($1, 'welcome', 'Welcome to Revelle',
-               'Your account is ready. Order updates and tracking news will land here — be you, be bold, be Revelle.')`,
-      [row.id],
+       values ($1, 'welcome', $2, $3)`,
+      [
+        row.id,
+        `Welcome to Revelle, ${firstName}`,
+        `Hi ${firstName}, your account is ready. Order updates and tracking news will land right here — be you, be bold, be Revelle. — Revelle Beauty`,
+      ],
     );
 
     startSession(res, row);

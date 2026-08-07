@@ -176,22 +176,39 @@ describe('order lifecycle', () => {
     expect(last.stage).toBe('delivered');
   });
 
-  it('the message inbox recorded the whole journey, and read state persists', async () => {
+  it('the message inbox recorded the whole journey, personalized, and read state persists', async () => {
     const res = await request(app).get('/api/account/messages').set('Cookie', customerCookie);
     expect(res.status).toBe(200);
     const titles = res.body.messages.map((m: { title: string }) => m.title);
-    // Welcome + payment + packaged + shipped + delivered, newest first.
+    // Welcome + payment + packaged + shipped + thank-you (customer confirmed).
     expect(titles.some((t: string) => t.includes('Welcome'))).toBe(true);
     expect(titles.some((t: string) => t.includes('confirmed'))).toBe(true);
     expect(titles.some((t: string) => t.includes('packaged'))).toBe(true);
     expect(titles.some((t: string) => t.includes('on its way'))).toBe(true);
-    expect(titles.some((t: string) => t.includes('delivered'))).toBe(true);
+    expect(titles.some((t: string) => t.startsWith('Thank you, Test'))).toBe(true);
+    // Personalized: greets by first name, signed by the brand.
+    const shipped = res.body.messages.find((m: { title: string }) => m.title.includes('on its way'));
+    expect(shipped.body).toContain('Hi Test');
+    expect(shipped.body).toContain('— Revelle Beauty');
     expect(res.body.unreadCount).toBeGreaterThan(0);
 
     // Mark read — server-side, so it holds across sessions and devices.
     await request(app).post('/api/account/messages/read').set('Cookie', customerCookie);
     const after = await request(app).get('/api/account/messages').set('Cookie', customerCookie);
     expect(after.body.unreadCount).toBe(0);
+  });
+
+  it('the ADMIN inbox gets notified when a customer confirms delivery', async () => {
+    const login = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'admin@test.local', password: 'test-admin-pass' });
+    const res = await request(app).get('/api/account/messages').set('Cookie', cookieOf(login));
+    expect(res.status).toBe(200);
+    const note = res.body.messages.find((m: { title: string }) =>
+      m.title.startsWith('Delivery confirmed'),
+    );
+    expect(note).toBeDefined();
+    expect(note.body).toContain('Test Runner');
   });
 
   it('SECURITY: another customer cannot read those messages', async () => {
