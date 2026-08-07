@@ -49,6 +49,29 @@ const schema = z.object({
   ADMIN_JWT_SECRET: z.string().min(32).optional(),
   ADMIN_SESSION_HOURS: z.coerce.number().int().min(1).max(168).default(12),
 
+  /**
+   * Outbound email (password resets).
+   * 'console' logs the email instead of sending — dev/test default.
+   * 'resend'  sends via the Resend HTTPS API (RESEND_API_KEY). Works on
+   *           Oracle Cloud, which blocks outbound SMTP port 25 — HTTPS is
+   *           never blocked.
+   * 'smtp'    sends via SMTP submission (port 587/465 — open on Oracle
+   *           Cloud; only port 25 is blocked). E.g. Gmail app password.
+   */
+  MAIL_DRIVER: z.enum(['console', 'resend', 'smtp']).default('console'),
+  MAIL_FROM: z.string().default('Revelle Beauty <onboarding@resend.dev>'),
+  RESEND_API_KEY: z.string().optional(),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  /** true = implicit TLS (port 465); false = STARTTLS (port 587). */
+  SMTP_SECURE: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
+  RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+
   MAX_CART_LINES: z.coerce.number().int().positive().default(20),
   MAX_QTY_PER_LINE: z.coerce.number().int().positive().default(10),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
@@ -80,6 +103,25 @@ if (isProd) {
   if (missing.length) {
     console.error(`Missing required production env vars: ${missing.join(', ')}`);
     process.exit(1);
+  }
+
+  // Fatal: an explicitly chosen mail driver missing its credentials is a
+  // misconfiguration, not a soft launch.
+  if (env.MAIL_DRIVER === 'resend' && !env.RESEND_API_KEY) {
+    console.error('MAIL_DRIVER=resend requires RESEND_API_KEY');
+    process.exit(1);
+  }
+  if (env.MAIL_DRIVER === 'smtp' && (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS)) {
+    console.error('MAIL_DRIVER=smtp requires SMTP_HOST, SMTP_USER and SMTP_PASS');
+    process.exit(1);
+  }
+  // Non-fatal: password reset simply logs the link server-side until a real
+  // mail driver is configured.
+  if (env.MAIL_DRIVER === 'console') {
+    console.error(
+      '[warn] MAIL_DRIVER=console — password reset emails are only logged, not sent. ' +
+        'Set MAIL_DRIVER=resend (RESEND_API_KEY) or smtp to deliver them.',
+    );
   }
 
   // Non-fatal: the storefront is perfectly useful for browsing before

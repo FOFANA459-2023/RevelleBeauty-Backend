@@ -22,6 +22,25 @@ export const loginLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+/**
+ * Password reset endpoints always answer 200 (no account enumeration), so —
+ * unlike loginLimiter — every request counts, successful or not. Separate
+ * instances: requesting links and redeeming them are independent budgets.
+ */
+export const forgotPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+export const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 export const uploadLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,

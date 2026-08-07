@@ -1,10 +1,14 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import type { Pool } from 'pg';
 import { env, isProd } from '../../config/env.js';
 import { badRequest, conflict, notFound, unauthorized } from '../../lib/errors.js';
-import { loginLimiter } from '../../middleware/rateLimit.js';
+import { logger } from '../../lib/logger.js';
+import { sendMail } from '../../lib/mailer.js';
+import { passwordResetEmail } from '../../lib/emails/passwordResetEmail.js';
+import { forgotPasswordLimiter, loginLimiter, resetPasswordLimiter } from '../../middleware/rateLimit.js';
 import {
   SESSION_COOKIE,
   customerId,
@@ -34,6 +38,15 @@ const registerSchema = z
 
 const loginSchema = z
   .object({ email: z.string().email().max(200), password: z.string().min(1).max(200) })
+  .strict();
+
+const forgotPasswordSchema = z.object({ email: z.string().email().max(200) }).strict();
+
+const resetPasswordSchema = z
+  .object({
+    token: z.string().min(20).max(200),
+    password: z.string().min(8, 'Password must be at least 8 characters').max(200),
+  })
   .strict();
 
 const profileSchema = z
@@ -77,6 +90,11 @@ function toProfile(c: CustomerRow) {
         }
       : null,
   };
+}
+
+/** Reset tokens are stored hashed — a DB leak must not yield working links. */
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }
 
 function startSession(res: import('express').Response, row: CustomerRow): void {
@@ -148,6 +166,81 @@ export function customerAuthRoutes(pool: Pool): Router {
 
     startSession(res, row);
     res.json({ customer: toProfile(row) });
+  });
+
+  r.post('/forgot-password', forgotPasswordLimiter, async (req, res) => {
+    const { email } = forgotPasswordSchema.parse(req.body);
+    const { rows } = await pool.query<CustomerRow>(`select * from customers where email = $1`, [
+      email.trim().toLowerCase(),
+    ]);
+    const row = rows[0];
+
+    // The admin credential lives in env and is re-seeded at every boot — a
+    // database reset would silently revert. Rotate it via env instead.
+    if (row && row.role !== 'admin') {
+      const token = randomBytes(32).toString('base64url');
+      const expiresAt = new Date(Date.now() + env.RESET_TOKEN_TTL_MINUTES * 60_000);
+      // One live link per account: a fresh request voids earlier ones.
+      await pool.query(
+        `delete from password_reset_tokens where customer_id = $1 and used_at is null`,
+        [row.id],
+      );
+      await pool.query(
+        `insert into password_reset_tokens (customer_id, token_hash, expires_at)
+         values ($1, $2, $3)`,
+        [row.id, hashToken(token), expiresAt],
+      );
+
+      const firstName = row.name.trim().split(/\s+/)[0] ?? 'there';
+      const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${token}`;
+      // Fire-and-forget: a mail failure must not change this response, or the
+      // endpoint becomes an oracle for which emails have accounts.
+      void sendMail(
+        passwordResetEmail({
+          to: row.email,
+          firstName,
+          resetUrl,
+          ttlMinutes: env.RESET_TOKEN_TTL_MINUTES,
+        }),
+      ).catch((err) => logger.error({ err }, `password reset email failed for ${row.email}`));
+    }
+
+    // Identical response whether or not the account exists.
+    res.json({ ok: true });
+  });
+
+  r.post('/reset-password', resetPasswordLimiter, async (req, res) => {
+    const { token, password } = resetPasswordSchema.parse(req.body);
+
+    // Atomically claim the token — a second submit of the same link loses.
+    const { rows } = await pool.query<{ customer_id: string }>(
+      `update password_reset_tokens set used_at = now()
+        where token_hash = $1 and used_at is null and expires_at > now()
+        returning customer_id`,
+      [hashToken(token)],
+    );
+    const claimed = rows[0];
+    if (!claimed) {
+      throw badRequest('This reset link is invalid or has expired — request a new one');
+    }
+
+    const hash = await bcrypt.hash(password, 12);
+    await pool.query(`update customers set password_hash = $2 where id = $1`, [
+      claimed.customer_id,
+      hash,
+    ]);
+
+    await pool.query(
+      `insert into customer_messages (customer_id, kind, title, body)
+       values ($1, 'welcome', $2, $3)`,
+      [
+        claimed.customer_id,
+        'Your password was changed',
+        'Your Revelle password was just reset. If this was not you, reset it again immediately and contact us. — Revelle Beauty',
+      ],
+    );
+
+    res.json({ ok: true });
   });
 
   r.post('/logout', (_req, res) => {
