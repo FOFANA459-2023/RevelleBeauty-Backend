@@ -27,7 +27,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.1",
-    "nodemailer": "^9.0.4",
+    "nodemailer": "^10.1.0",
     "pg": "^8.16.0",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
