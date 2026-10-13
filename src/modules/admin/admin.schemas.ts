@@ -8,6 +8,7 @@ export const hexSchema = z
 export const variantUpsertSchema = z
   .object({
     name: z.string().trim().min(1).max(60),
+    shadeCode: z.string().trim().max(12).nullish(),
     hexColor: hexSchema.nullish(),
     hexColorSecondary: hexSchema.nullish(),
     finish: z.string().trim().max(40).nullish(),

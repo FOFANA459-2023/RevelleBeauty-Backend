@@ -32,6 +32,7 @@ interface VariantJson {
   id: string;
   name: string;
   slug: string;
+  shade_code: string | null;
   hex_color: string | null;
   hex_color_secondary: string | null;
   finish: string | null;
@@ -81,7 +82,7 @@ const PRODUCT_SELECT = `
          p.variant_label, p.is_featured, p.meta_title, p.meta_description,
          coalesce((
            select json_agg(json_build_object(
-             'id', v.id, 'name', v.name, 'slug', v.slug,
+             'id', v.id, 'name', v.name, 'slug', v.slug, 'shade_code', v.shade_code,
              'hex_color', v.hex_color, 'hex_color_secondary', v.hex_color_secondary,
              'finish', v.finish, 'price_cents_override', v.price_cents_override,
              'is_default', v.is_default, 'display_order', v.display_order,
@@ -125,6 +126,7 @@ function toSummary(r: ProductRow): ProductSummaryDTO {
       id: v.id,
       name: v.name,
       slug: v.slug,
+      shadeCode: v.shade_code,
       hexColor: v.hex_color,
       hexColorSecondary: v.hex_color_secondary,
     }));
@@ -151,6 +153,7 @@ function toDetail(r: ProductRow): ProductDetailDTO {
     id: v.id,
     name: v.name,
     slug: v.slug,
+    shadeCode: v.shade_code,
     hexColor: v.hex_color,
     hexColorSecondary: v.hex_color_secondary,
     finish: v.finish,

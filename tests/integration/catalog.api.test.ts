@@ -23,7 +23,12 @@ describe('public catalog API', () => {
     expect(res.body.total).toBeGreaterThanOrEqual(16);
     const oil = res.body.products.find((p: { slug: string }) => p.slug === 'high-shine-lip-oil');
     expect(oil).toBeDefined();
-    expect(oil.swatches.length).toBe(5);
+    // Four photographed shades (migration 0012); the swatch row is ordered
+    // by the maker's shade code.
+    expect(oil.swatches.length).toBe(4);
+    expect(oil.swatches.map((s: { shadeCode: string }) => s.shadeCode)).toEqual([
+      'HS01', 'HS02', 'HS04', 'HS06',
+    ]);
     expect(oil.swatches[0].hexColor).toMatch(/^#[0-9a-f]{6}$/);
     expect(oil.priceCents).toBe(2200);
     expect(oil.inStock).toBe(true);
@@ -39,9 +44,12 @@ describe('public catalog API', () => {
     const res = await request(app).get('/api/products/creamy-matte-lipstick');
     expect(res.status).toBe(200);
     const p = res.body.product;
-    expect(p.variants.length).toBe(5);
+    expect(p.variants.length).toBe(4);
     for (const v of p.variants) {
       if (v.hexColor) expect(v.hexColor).toBe(v.hexColor.toLowerCase());
+      // Code leads the slug, so ?shade= stays unique even when two products
+      // both sell a "Crystal Clear".
+      expect(v.slug.startsWith(`${v.shadeCode.toLowerCase()}-`)).toBe(true);
       expect(v.priceCents).toBe(2400);
       expect(v).not.toHaveProperty('stockQuantity'); // stock is never public
     }

@@ -8,6 +8,7 @@ dist/
 
 # Local/test databases
 .pgdata/
+.pgdata-backup-*/
 .pgdata-test/
 tests/.test-db-url
 

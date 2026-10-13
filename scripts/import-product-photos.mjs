@@ -1,15 +1,36 @@
 /**
- * Imports product photography from backend/seed-assets/lips/<product-slug>/
- * into storage + product_images, linking each photo to its shade variant so
- * the storefront swaps the hero image when a shade is selected.
+ * Syncs product photography from backend/seed-assets/lips/<product-slug>/
+ * into storage + product_images, linking every photo to its shade so the
+ * storefront can show a gallery per shade.
  *
- * - Applies 0011_real_lip_shades.sql first (idempotent) and records it in
- *   schema_migrations so the app's runner skips it.
+ * Two folder layouts, picked per product by PLAN:
+ *
+ *   coded   — the current delivery. Files are named "<CODE> <Shade Name>.png",
+ *             optionally " (2)" for further angles of the same shade:
+ *               <slug>/shades/HS01 Crystal Clear.png
+ *               <slug>/shades/HS01 Crystal Clear (1).png
+ *               <slug>/shared/High Shine shades.jpg
+ *             Everything under shades/ must carry a code that exists in
+ *             product_variants.shade_code (see migration 0012); everything
+ *             under shared/ belongs to the product and is appended to every
+ *             shade's gallery by the storefront.
+ *
+ *   legacy  — products still on the older delivery, where the gallery is a
+ *             hand-written list of "Lip - <Product> - <Label>.jpg" files.
+ *
+ * - Applies migrations 0011 and 0012 first (idempotent) and records them in
+ *   schema_migrations so the app's runner skips them.
+ * - PLAN is the source of truth: image rows that are no longer wanted are
+ *   removed. Their storage objects are deliberately kept — order_items
+ *   snapshot image paths, so past orders must not lose thumbnails.
  * - Normalizes images exactly like the admin upload route (rotate, 1600px cap,
  *   webp q82) and uploads via the configured storage driver (supabase/local).
- * - Idempotent: a photo whose alt_text already exists for the product is skipped.
+ * - Idempotent: storage paths are derived from the source file's content hash,
+ *   so a re-run uploads nothing that is already there.
  *
- * Run from backend/:  node scripts/import-product-photos.mjs
+ * Run from backend/ (the dev backend must be running — it hosts the embedded db):
+ *   node scripts/import-product-photos.mjs [--dry-run]                local copy
+ *   node scripts/import-product-photos.mjs --target=prod [--dry-run]  production
  */
 import pg from 'pg';
 import fs from 'node:fs';
@@ -20,15 +41,23 @@ import sharp from 'sharp';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
+const DRY_RUN = process.argv.includes('--dry-run');
 
 // ---------- env ----------
 const env = {};
 for (const line of fs.readFileSync(path.join(root, '.env'), 'utf8').split('\n')) {
-  const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+  const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
   if (m) env[m[1]] = m[2];
 }
-const DATABASE_URL = process.env.DATABASE_URL ?? env.DATABASE_URL;
-const STORAGE_DRIVER = process.env.STORAGE_DRIVER ?? env.STORAGE_DRIVER ?? 'local';
+// Local embedded copy by default; production only when asked for explicitly.
+const TARGET_PROD = process.argv.includes('--target=prod');
+const DATABASE_URL = TARGET_PROD
+  ? process.env.PROD_DATABASE_URL ?? env.PROD_DATABASE_URL
+  : process.env.DATABASE_URL ?? env.DATABASE_URL ??
+    `postgresql://revelle:revelle@localhost:${env.EMBEDDED_PG_PORT || 5544}/revelle`;
+const STORAGE_DRIVER = TARGET_PROD
+  ? 'supabase'
+  : process.env.STORAGE_DRIVER ?? env.STORAGE_DRIVER ?? 'local';
 const SUPABASE_URL = (process.env.SUPABASE_URL ?? env.SUPABASE_URL ?? '').replace(/\/$/, '');
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? env.SUPABASE_SERVICE_ROLE_KEY;
 const BUCKET = process.env.SUPABASE_STORAGE_BUCKET ?? env.SUPABASE_STORAGE_BUCKET ?? 'product-images';
@@ -37,7 +66,11 @@ if (STORAGE_DRIVER === 'supabase' && (!SUPABASE_URL || !SUPABASE_KEY)) {
   throw new Error('STORAGE_DRIVER=supabase requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
 }
 
-const pool = new pg.Pool({ connectionString: DATABASE_URL });
+const pool = new pg.Pool({
+  connectionString: DATABASE_URL,
+  ssl: /supabase\.(co|com)/.test(DATABASE_URL) ? { rejectUnauthorized: false } : undefined,
+});
+console.log(`target: ${TARGET_PROD ? 'PRODUCTION' : 'local'} database, ${STORAGE_DRIVER} storage`);
 
 async function putObject(storagePath, buf) {
   if (STORAGE_DRIVER === 'supabase') {
@@ -60,217 +93,355 @@ async function putObject(storagePath, buf) {
 }
 
 /**
- * Per product: filename stem (before any " (n)") → variant slug, or null for
- * product-level marketing shots. `primary` names the photo that should be the
- * product's primary image.
+ * `layout: 'coded'` products are read straight off disk — shades/ and shared/.
+ * `layout: 'legacy'` products list their gallery by label, in display order
+ * (first = primary), as [label, variant slug or null for product-level shots].
+ * `publish` activates a draft product once it has photography.
  */
 const PLAN = {
-  'high-shine-lip-oil': {
-    primary: 'Lip - High Shine Lip Oil - Duo Fuchsia Coral',
-    map: {
-      'Clear': 'clear',
-      'Peach Nude': 'peach-nude',
-      'Pink Blossom': 'pink-blossom',
-      'Rosewood': 'rosewood',
-      'Fuchsia Kiss': 'fuchsia-kiss',
-      'Berry Blush': 'berry-blush',
-      'Duo Fuchsia Coral': null,
-      'Swatch Chart': null,
-      'Arm Swatches': null,
-      'Banner': null,
-      'Line Sheet': null,
-      'Shade Grid': null,
-    },
-  },
+  'high-shine-lip-oil': { layout: 'coded' },
+  'lip-lustre-lip-gloss': { layout: 'coded' },
+  'creamy-matte-lipstick': { layout: 'coded' },
+  'long-lasting-matte-liquid-lipstick': { layout: 'coded', publish: true },
+  'diamond-lip-gloss': { layout: 'coded' },
+  'nourishing-lip-tint': { layout: 'coded' },
+  'matte-lip-liner': { layout: 'coded', publish: true },
+
+  // Still on the older delivery: their photos are named by shade, not by code,
+  // so they keep the galleries they have until coded photography arrives.
   'ultra-light-lip-oil': {
-    primary: 'Lip - Ultra Light Lip Oil - Pure Glow',
-    map: {
-      'Cherry Pop': 'cherry-pop',
-      'Pink Glow': 'pink-glow',
-      'Clear Shine': 'clear-shine',
-      'Glitter Glaze': 'glitter-glaze',
-      'Berry Kiss': 'berry-kiss',
-      'Pure Glow': 'pure-glow',
-      'Honey Glow': 'honey-glow',
-    },
-  },
-  'lip-lustre-lip-gloss': {
-    primary: 'Lip - Lustre Lip Gloss - Soft Nude',
-    map: {
-      'Sunset Glow': 'sunset-glow',
-      'True Red': 'true-red',
-      'Cherry Wine': 'cherry-wine',
-      'Golden Shimmer': 'golden-shimmer',
-      'Coral Kiss': 'coral-kiss',
-      'Crystal Clear': 'crystal-clear',
-      'Soft Nude': 'soft-nude',
-      'Berry Blush': 'berry-blush',
-      'Banner': null,
-    },
-  },
-  'diamond-lip-gloss': {
-    primary: 'Lip - Diamond Lip Gloss - Collection',
-    map: {
-      'Diamond Clear': 'diamond-clear',
-      'Collection': null,
-      'Infographic': null,
-    },
+    layout: 'legacy',
+    name: 'Ultra Light Lip Oil',
+    photos: [
+      ['Pure Glow', 'pure-glow'],
+      ['Clear Shine', 'clear-shine'],
+      ['Pink Glow', 'pink-glow'],
+      ['Glitter Glaze', 'glitter-glaze'],
+      ['Berry Kiss', 'berry-kiss'],
+      ['Cherry Pop', 'cherry-pop'],
+      ['Honey Glow', 'honey-glow'],
+      ['Banner', null],
+      ['Line Sheet', null],
+      ['Line Sheet Ice Cube', null],
+    ],
   },
   'magic-tone-lip': {
-    primary: 'Lip - Magic Tone Lip Oil - Trio',
-    map: {
-      'Sakura': 'sakura',
-      'Vanilla': 'vanilla',
-      'Black Currant': 'black-currant',
-      'Swatches': null,
-      'Trio': null,
-    },
+    layout: 'legacy',
+    name: 'Magic Tone Lip Oil',
+    photos: [
+      ['Trio', null],
+      ['Vanilla', 'vanilla'],
+      ['Sakura', 'sakura'],
+      ['Sakura Before After', 'sakura'],
+      ['Black Currant', 'black-currant'],
+      ['Trio Flatlay', null],
+      ['Trio Silk', null],
+      ['Trio Silk Flatlay', null],
+      ['Swatches', null],
+      ['Arm Swatches', null],
+      ['Line Sheet', null],
+    ],
   },
   'lip-gloss-hyaluronic-acid': {
-    primary: 'Lip - Hyaluronic Acid Lip Gloss - Duo',
-    map: {
-      'Clear': 'hydra-clear',
-      'Duo': null,
-      'Infographic': null,
-    },
-  },
-  'nourishing-lip-tint': {
-    primary: 'Lip - Nourishing Lip Tint - Trio',
-    map: {
-      'Coral': 'coral',
-      'Scarlet': 'scarlet',
-      'Ruby Red': 'ruby-red',
-      'Wine': 'wine',
-      'Black Cherry': 'black-cherry',
-      'Trio': null,
-      'Collection': null,
-    },
+    layout: 'legacy',
+    name: 'Hyaluronic Acid Lip Gloss',
+    photos: [
+      ['Duo', null],
+      ['Clear', 'hydra-clear'],
+      ['Infographic Hydrating', null],
+      ['Infographic Iridescent', null],
+      ['Infographic Lips', null],
+      ['Infographic Before After', null],
+      ['Infographic Plumps', null],
+      ['Line Sheet', null],
+    ],
   },
   'sugar-lip-scrub': {
-    primary: 'Lip - Sugar Lip Scrub - Jar',
-    map: {
-      'Jar': null,
-      'Sugar Cubes': null,
-      'With Box': null,
-      'Infographic': null,
-      'Model': null,
-    },
+    layout: 'legacy',
+    name: 'Sugar Lip Scrub',
+    photos: [
+      ['Jar', null],
+      ['Jar Swatch', null],
+      ['Open Jar', null],
+      ['Sugar Cubes', null],
+      ['With Box', null],
+      ['Model', null],
+      ['Infographic', null],
+      ['Lip Therapy Set', null],
+    ],
+  },
+  'peptide-lip-lacquer': {
+    layout: 'legacy',
+    name: 'Peptide Lip Lacquer',
+    publish: true,
+    photos: [
+      ['Collection', null],
+      ['Arm Swatches Named', null],
+      ['Lifestyle', null],
+      ['Tube Pink', null],
+      ['Tube Peach Pink', null],
+      ['Tube Cherry', null],
+      ['Tube Chocolate', null],
+      ['Tube White', null],
+      ['Tube White On Black', null],
+      ['Swatch Chart', null],
+      ['Arm Swatches', null],
+      ['Line Sheet', null],
+    ],
   },
 };
 
-/** "Lip - Product - Color (2).jpg" → { stem: "Lip - Product - Color", color: "Color" } */
-function parseName(file) {
-  const base = file.replace(/\.jpg$/i, '');
-  const stem = base.replace(/ \(\d+\)$/, '');
-  const parts = stem.split(' - ');
-  return { base, stem, color: parts[2] ?? '' };
+/** "HS01 Crystal Clear (2).png" -> { code: 'HS01', name: 'Crystal Clear', seq: 2 } */
+const CODED_FILE = /^([A-Z]{1,3}\d{2,4})\s+(.+?)(?:\s*[(_](\d+)\)?)?$/;
+
+function parseCodedName(file) {
+  const m = path.basename(file, path.extname(file)).match(CODED_FILE);
+  return m ? { code: m[1], name: m[2].trim(), seq: m[3] ? Number(m[3]) : 0 } : null;
 }
 
-async function main() {
-  // 1) real shades migration (idempotent), recorded so the boot runner skips it
-  const migFile = '0011_real_lip_shades.sql';
-  const migSql = fs.readFileSync(path.join(root, 'migrations', migFile), 'utf8');
+function findPhoto(dir, productName, label) {
+  const base = `Lip - ${productName} - ${label}`;
+  for (const ext of ['.png', '.jpg', '.jpeg']) {
+    const file = path.join(dir, base + ext);
+    if (fs.existsSync(file)) return file;
+  }
+  return null;
+}
+
+async function applyMigrations() {
+  // Same rule as the app's runner: a file runs once, in order. 0011 must not be
+  // replayed on a database that already has 0012 — 0012 reslugs the shades 0011
+  // created, so a replay would try to insert them a second time.
+  const { rows } = await pool.query(
+    `select filename from schema_migrations`,
+  ).catch(() => ({ rows: [] }));
+  const applied = new Set(rows.map((r) => r.filename));
+
+  for (const migFile of ['0011_real_lip_shades.sql', '0012_shade_catalog.sql']) {
+    if (applied.has(migFile)) {
+      console.log(`already applied: ${migFile}`);
+      continue;
+    }
+    const migSql = fs.readFileSync(path.join(root, 'migrations', migFile), 'utf8');
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(migSql);
+      await client.query(
+        `insert into schema_migrations (filename) values ($1) on conflict do nothing`,
+        [migFile],
+      );
+      if (DRY_RUN) await client.query('rollback');
+      else await client.query('commit');
+      console.log(`${DRY_RUN ? 'checked' : 'applied'} ${migFile}`);
+    } catch (err) {
+      await client.query('rollback');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+/**
+ * Coded layout: shades/ grouped by code in the shade's display order, each
+ * shade's own angles first (the plain filename, then " (1)", " (2)"…),
+ * then shared/ product-level shots.
+ */
+function collectCoded(dir, productSlug, product, variants) {
+  const byCode = new Map(variants.filter((v) => v.shade_code).map((v) => [v.shade_code, v]));
+  const shadesDir = path.join(dir, 'shades');
+  const sharedDir = path.join(dir, 'shared');
+  if (!fs.existsSync(shadesDir)) throw new Error(`${productSlug}: missing shades/ folder`);
+
+  const grouped = new Map();
+  for (const file of fs.readdirSync(shadesDir)) {
+    const parsed = parseCodedName(file);
+    if (!parsed) throw new Error(`${productSlug}: shades/${file} has no shade code`);
+    if (!byCode.has(parsed.code)) {
+      throw new Error(
+        `${productSlug}: shades/${file} is shade ${parsed.code}, which is not in the ` +
+          `catalog — add it to migrations/0012_shade_catalog.sql first`,
+      );
+    }
+    if (!grouped.has(parsed.code)) grouped.set(parsed.code, []);
+    grouped.get(parsed.code).push({ file: path.join(shadesDir, file), ...parsed });
+  }
+
+  const unphotographed = variants.filter((v) => v.shade_code && !grouped.has(v.shade_code));
+  if (unphotographed.length) {
+    console.log(
+      `  ! ${productSlug}: no photo for ${unphotographed.map((v) => v.shade_code).join(', ')}`,
+    );
+  }
+
+  const out = [];
+  for (const v of variants) {
+    const files = grouped.get(v.shade_code);
+    if (!files) continue;
+    files.sort((a, b) => a.seq - b.seq || a.file.localeCompare(b.file));
+    for (const f of files) {
+      out.push({
+        file: f.file,
+        variantId: v.id,
+        altText: `${product.name} — ${v.shade_code} ${v.name}`,
+      });
+    }
+  }
+  if (fs.existsSync(sharedDir)) {
+    for (const file of fs.readdirSync(sharedDir).sort()) {
+      out.push({
+        file: path.join(sharedDir, file),
+        variantId: null,
+        altText: product.name,
+      });
+    }
+  }
+  return out;
+}
+
+/** Legacy layout: the PLAN's label list, resolved against the flat folder. */
+function collectLegacy(dir, productSlug, plan, product, variants) {
+  const variantBySlug = new Map(variants.map((v) => [v.slug, v.id]));
+  const planned = new Set();
+  const out = [];
+  for (const [label, variantSlug] of plan.photos) {
+    const file = findPhoto(dir, plan.name, label);
+    if (!file) throw new Error(`${productSlug}: missing photo "${label}"`);
+    planned.add(path.basename(file));
+    const variantId = variantSlug ? variantBySlug.get(variantSlug) : null;
+    if (variantSlug && !variantId) throw new Error(`${productSlug}: variant ${variantSlug} missing`);
+    out.push({ file, variantId, altText: `${product.name} — ${label}` });
+  }
+  const strays = fs.readdirSync(dir).filter((f) => !planned.has(f));
+  if (strays.length) throw new Error(`${productSlug}: files not in PLAN: ${strays.join(', ')}`);
+  return out;
+}
+
+async function syncProduct(productSlug, plan, assetsRoot, totals) {
+  const dir = path.join(assetsRoot, productSlug);
+  const { rows: [product] } = await pool.query(
+    `select id, name, status from products where slug = $1`, [productSlug],
+  );
+  if (!product) throw new Error(`product not found: ${productSlug}`);
+
+  const { rows: variants } = await pool.query(
+    `select id, slug, shade_code from product_variants
+      where product_id = $1 order by display_order`, [product.id],
+  );
+
+  const collected = plan.layout === 'coded'
+    ? collectCoded(dir, productSlug, product, variants)
+    : collectLegacy(dir, productSlug, plan, product, variants);
+
+  const wanted = collected.map((c, index) => {
+    const raw = fs.readFileSync(c.file);
+    const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32);
+    return {
+      ...c,
+      raw,
+      storagePath: `products/${product.id}/${hash}.webp`,
+      isPrimary: index === 0,
+      displayOrder: index + 1,
+    };
+  });
+
+  const { rows: existing } = await pool.query(
+    `select id, storage_path from product_images where product_id = $1`, [product.id],
+  );
+  const existingByPath = new Map(existing.map((r) => [r.storage_path, r.id]));
+  const wantedPaths = new Set(wanted.map((w) => w.storagePath));
+  const toRemove = existing.filter((r) => !wantedPaths.has(r.storage_path));
+  const toUpload = wanted.filter((w) => !existingByPath.has(w.storagePath));
+  const shadeLinked = wanted.filter((w) => w.variantId).length;
+
+  console.log(
+    `${productSlug}: ${wanted.length} photos (${shadeLinked} on shades) — ` +
+      `${toUpload.length} to upload, ${wanted.length - toUpload.length} kept, ` +
+      `${toRemove.length} rows to remove` +
+      (plan.publish && product.status === 'draft' ? ', publish draft' : ''),
+  );
+  totals.uploaded += toUpload.length;
+  totals.removed += toRemove.length;
+  if (DRY_RUN) return;
+
+  // Upload before touching rows so the live gallery never points at a missing object.
+  for (const w of toUpload) {
+    const buf = await sharp(w.raw).rotate().resize({ width: 1600, withoutEnlargement: true })
+      .webp({ quality: 82 }).toBuffer();
+    const meta = await sharp(buf).metadata();
+    w.width = meta.width ?? null;
+    w.height = meta.height ?? null;
+    await putObject(w.storagePath, buf);
+  }
+
   const client = await pool.connect();
   try {
     await client.query('begin');
-    await client.query(migSql);
-    await client.query(
-      `insert into schema_migrations (filename) values ($1) on conflict do nothing`,
-      [migFile],
-    );
+    // One primary per product is enforced by a unique index — clear first.
+    await client.query(`update product_images set is_primary = false where product_id = $1`, [product.id]);
+    if (toRemove.length) {
+      await client.query(`delete from product_images where id = any($1::uuid[])`, [
+        toRemove.map((r) => r.id),
+      ]);
+    }
+    for (const w of wanted) {
+      const id = existingByPath.get(w.storagePath);
+      if (id) {
+        await client.query(
+          `update product_images
+              set variant_id = $2, alt_text = $3, is_primary = $4, display_order = $5
+            where id = $1`,
+          [id, w.variantId, w.altText, w.isPrimary, w.displayOrder],
+        );
+      } else {
+        await client.query(
+          `insert into product_images
+             (product_id, variant_id, storage_path, alt_text, width, height, is_primary, display_order)
+           values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [product.id, w.variantId, w.storagePath, w.altText, w.width, w.height, w.isPrimary, w.displayOrder],
+        );
+      }
+    }
+    if (plan.publish) {
+      await client.query(
+        `update products set status = 'active' where id = $1 and status = 'draft'`, [product.id],
+      );
+    }
     await client.query('commit');
-    console.log(`applied ${migFile}`);
   } catch (err) {
     await client.query('rollback');
     throw err;
   } finally {
     client.release();
   }
+}
 
-  // 2) photos
+async function main() {
+  await applyMigrations();
+
   const assetsRoot = path.join(root, 'seed-assets', 'lips');
-  let uploaded = 0;
-  let skipped = 0;
+  const unplanned = fs.readdirSync(assetsRoot).filter((d) => !(d in PLAN));
+  if (unplanned.length) throw new Error(`folders without a PLAN entry: ${unplanned.join(', ')}`);
 
+  const totals = { uploaded: 0, removed: 0 };
   for (const [productSlug, plan] of Object.entries(PLAN)) {
-    const dir = path.join(assetsRoot, productSlug);
-    if (!fs.existsSync(dir)) {
-      console.warn(`missing folder: ${dir}`);
-      continue;
-    }
-    const { rows: [product] } = await pool.query(
-      `select id from products where slug = $1`, [productSlug],
-    );
-    if (!product) {
-      console.warn(`product not found: ${productSlug}`);
-      continue;
-    }
-    const { rows: variants } = await pool.query(
-      `select id, slug from product_variants where product_id = $1`, [product.id],
-    );
-    const variantBySlug = Object.fromEntries(variants.map((v) => [v.slug, v.id]));
-
-    const files = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.jpg')).sort();
-    for (const file of files) {
-      const { base, color } = parseName(file);
-      if (!(color in plan.map)) {
-        console.warn(`  unmapped photo (uploaded product-level): ${file}`);
-      }
-      const variantSlug = plan.map[color] ?? null;
-      const variantId = variantSlug ? variantBySlug[variantSlug] ?? null : null;
-      if (variantSlug && !variantId) {
-        console.warn(`  variant ${variantSlug} missing for ${productSlug} — linking product-level`);
-      }
-
-      const { rows: existing } = await pool.query(
-        `select 1 from product_images where product_id = $1 and alt_text = $2`,
-        [product.id, base],
-      );
-      if (existing.length) {
-        skipped++;
-        continue;
-      }
-
-      const raw = fs.readFileSync(path.join(dir, file));
-      const buf = await sharp(raw).rotate().resize({ width: 1600, withoutEnlargement: true })
-        .webp({ quality: 82 }).toBuffer();
-      const meta = await sharp(buf).metadata();
-
-      const imageId = crypto.randomUUID();
-      const storagePath = `products/${product.id}/${imageId}.webp`;
-      await putObject(storagePath, buf);
-
-      await pool.query(
-        `insert into product_images
-           (id, product_id, variant_id, storage_path, alt_text, width, height, is_primary, display_order)
-         values ($1,$2,$3,$4,$5,$6,$7,false,
-                 coalesce((select max(display_order) + 1 from product_images where product_id = $2), 1))`,
-        [imageId, product.id, variantId, storagePath, base, meta.width ?? null, meta.height ?? null],
-      );
-      uploaded++;
-      console.log(`  + ${productSlug} ← ${file}${variantSlug ? `  [shade: ${variantSlug}]` : ''}`);
-    }
-
-    // deterministic primary
-    await pool.query(
-      `update product_images set is_primary = (alt_text = $2)
-       where product_id = $1
-         and exists (select 1 from product_images where product_id = $1 and alt_text = $2)`,
-      [product.id, plan.primary],
-    );
+    await syncProduct(productSlug, plan, assetsRoot, totals);
   }
-
-  console.log(`done: ${uploaded} uploaded, ${skipped} already present`);
+  console.log(
+    `${DRY_RUN ? 'dry run' : 'done'}: ${totals.uploaded} uploaded, ${totals.removed} stale rows removed`,
+  );
 
   const { rows } = await pool.query(`
-    select p.slug, count(i.id) images, count(i.variant_id) shade_linked
+    select p.slug, p.status, count(i.id)::int images, count(i.variant_id)::int shade_linked
     from products p join product_images i on i.product_id = p.id
-    group by p.slug order by p.slug`);
+    group by p.slug, p.status order by p.slug`);
   console.table(rows);
   await pool.end();
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error(err);
+  await pool.end();
   process.exit(1);
 });

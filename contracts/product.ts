@@ -17,6 +17,8 @@ export interface VariantDTO {
   id: string;
   name: string;
   slug: string;
+  /** Maker shade code from the line sheet ("HS01"), shown beside the name. */
+  shadeCode: string | null;
   /** Lowercase #rrggbb, or null for non-shade variants (scrubs, skincare). */
   hexColor: string | null;
   /** Second hex for duochrome / glitter shades — render as a gradient swatch. */
@@ -35,6 +37,7 @@ export interface SwatchDTO {
   id: string;
   name: string;
   slug: string;
+  shadeCode: string | null;
   hexColor: string | null;
   hexColorSecondary: string | null;
 }

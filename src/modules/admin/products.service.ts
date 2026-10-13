@@ -135,6 +135,7 @@ function mapAdminVariant(basePriceCents: number) {
     productId: v.product_id as string,
     name: v.name as string,
     slug: v.slug as string,
+    shadeCode: v.shade_code as string | null,
     hexColor: v.hex_color as string | null,
     hexColorSecondary: v.hex_color_secondary as string | null,
     finish: v.finish as string | null,
@@ -212,15 +213,18 @@ async function insertVariant(
   v: VariantUpsert,
   fallbackOrder: number,
 ): Promise<string> {
-  const vslug = slugify(v.name) || `variant-${fallbackOrder}`;
+  // The shade code is part of the shade's identity, so it leads the slug.
+  const vslug = slugify([v.shadeCode, v.name].filter(Boolean).join(' ')) ||
+    `variant-${fallbackOrder}`;
   const { rows } = await client.query<{ id: string }>(
     `insert into product_variants
-       (product_id, name, slug, hex_color, hex_color_secondary, finish, sku,
+       (product_id, name, slug, shade_code, hex_color, hex_color_secondary, finish, sku,
         price_cents_override, stock_quantity, is_available, is_default, display_order)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      returning id`,
     [
-      productId, v.name, vslug, v.hexColor ?? null, v.hexColorSecondary ?? null,
+      productId, v.name, vslug, v.shadeCode ?? null,
+      v.hexColor ?? null, v.hexColorSecondary ?? null,
       v.finish ?? null, v.sku ?? null, v.priceCentsOverride ?? null,
       v.stockQuantity ?? 0, v.isAvailable ?? true, v.isDefault ?? false,
       v.displayOrder ?? fallbackOrder,
@@ -315,9 +319,20 @@ export async function updateVariant(
     sets.push(`${col} = $${params.length}`);
   };
 
-  if (patch.name !== undefined) {
-    push('name', patch.name);
-    push('slug', slugify(patch.name));
+  // Name and code both feed the slug, so a change to either rebuilds it from
+  // the pair — renaming "Crystal Clear" must not drop the "hs01-" in front.
+  if (patch.name !== undefined || patch.shadeCode !== undefined) {
+    const { rows } = await pool.query<{ name: string; shade_code: string | null }>(
+      `select name, shade_code from product_variants where id = $1`,
+      [variantId],
+    );
+    const current = rows[0];
+    if (!current) throw notFound('Variant not found');
+    const name = patch.name ?? current.name;
+    const shadeCode = patch.shadeCode !== undefined ? patch.shadeCode : current.shade_code;
+    if (patch.name !== undefined) push('name', name);
+    if (patch.shadeCode !== undefined) push('shade_code', shadeCode);
+    push('slug', slugify([shadeCode, name].filter(Boolean).join(' ')));
   }
   if (patch.hexColor !== undefined) push('hex_color', patch.hexColor);
   if (patch.hexColorSecondary !== undefined) push('hex_color_secondary', patch.hexColorSecondary);

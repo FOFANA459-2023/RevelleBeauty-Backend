@@ -28,6 +28,8 @@ export interface CategoryUpsertInput {
 
 export interface VariantUpsertInput {
   name: string;
+  /** Maker shade code ("HS01"); joins the name to form the shade's slug. */
+  shadeCode?: string | null;
   hexColor?: string | null;
   hexColorSecondary?: string | null;
   finish?: string | null;
@@ -65,6 +67,7 @@ export interface AdminVariantDTO {
   productId: string;
   name: string;
   slug: string;
+  shadeCode: string | null;
   hexColor: string | null;
   hexColorSecondary: string | null;
   finish: string | null;
