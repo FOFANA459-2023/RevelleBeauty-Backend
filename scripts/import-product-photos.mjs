@@ -326,7 +326,7 @@ async function syncProduct(productSlug, plan, assetsRoot, totals) {
   if (!product) throw new Error(`product not found: ${productSlug}`);
 
   const { rows: variants } = await pool.query(
-    `select id, slug, shade_code from product_variants
+    `select id, slug, name, shade_code from product_variants
       where product_id = $1 order by display_order`, [product.id],
   );
 
