@@ -74,6 +74,9 @@ interface ProductRow {
   total?: string;
 }
 
+/** How many photographs of one shade a product card may carry for its hover. */
+const SWATCH_PREVIEW_LIMIT = 4;
+
 /** The single product select used by list, detail, and by-ids. */
 const PRODUCT_SELECT = `
   select p.id, p.category_id, c.slug as category_slug, p.slug, p.name, p.tagline,
@@ -120,6 +123,18 @@ function mapImage(i: ImageJson): ImageDTO {
 function toSummary(r: ProductRow): ProductSummaryDTO {
   const prices = r.variants_json.map((v) => v.price_cents_override ?? r.base_price_cents);
   const primary = r.images_json.find((i) => i.is_primary) ?? r.images_json[0];
+
+  // Every photograph of each shade, in display order, so a card can walk
+  // through them under the pointer. No extra round trip; capped so a list of
+  // sixty products does not carry a gallery each.
+  const shotsByVariant = new Map<string, ImageJson[]>();
+  for (const i of r.images_json) {
+    if (!i.variant_id) continue;
+    const shots = shotsByVariant.get(i.variant_id) ?? [];
+    if (shots.length < SWATCH_PREVIEW_LIMIT) shots.push(i);
+    shotsByVariant.set(i.variant_id, shots);
+  }
+
   const swatches: SwatchDTO[] = r.variants_json
     .filter((v) => v.hex_color)
     .map((v) => ({
@@ -129,6 +144,7 @@ function toSummary(r: ProductRow): ProductSummaryDTO {
       shadeCode: v.shade_code,
       hexColor: v.hex_color,
       hexColorSecondary: v.hex_color_secondary,
+      imageUrls: (shotsByVariant.get(v.id) ?? []).map((i) => storage.publicUrl(i.storage_path)),
     }));
 
   return {
@@ -144,6 +160,9 @@ function toSummary(r: ProductRow): ProductSummaryDTO {
     isFeatured: r.is_featured,
     inStock: r.variants_json.some((v) => v.in_stock),
     primaryImage: primary ? mapImage(primary) : null,
+    previewImageUrls: r.images_json
+      .slice(0, SWATCH_PREVIEW_LIMIT)
+      .map((i) => storage.publicUrl(i.storage_path)),
     swatches,
   };
 }

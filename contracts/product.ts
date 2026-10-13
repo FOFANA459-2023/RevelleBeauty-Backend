@@ -40,6 +40,12 @@ export interface SwatchDTO {
   shadeCode: string | null;
   hexColor: string | null;
   hexColorSecondary: string | null;
+  /**
+   * Every photograph of this shade, in gallery order — a card walks through
+   * them while the pointer rests on the bead. Capped; the product page is
+   * where the full set lives.
+   */
+  imageUrls: string[];
 }
 
 export interface ProductSummaryDTO {
@@ -55,6 +61,11 @@ export interface ProductSummaryDTO {
   isFeatured: boolean;
   inStock: boolean;
   primaryImage: ImageDTO | null;
+  /**
+   * The product's opening photographs, in gallery order — a card turns through
+   * them while the pointer is on the image. Capped; `primaryImage` is [0].
+   */
+  previewImageUrls: string[];
   swatches: SwatchDTO[];
 }
 
