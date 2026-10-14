@@ -33,7 +33,7 @@ describe('public catalog API', () => {
       'HS01', 'HS02', 'HS04', 'HS06',
     ]);
     expect(oil.swatches[0].hexColor).toMatch(/^#[0-9a-f]{6}$/);
-    expect(oil.priceCents).toBe(2200);
+    expect(oil.priceCents).toBe(1499);
     expect(oil.inStock).toBe(true);
   });
 
@@ -53,7 +53,7 @@ describe('public catalog API', () => {
       // Code leads the slug, so ?shade= stays unique even when two products
       // both sell a "Crystal Clear".
       expect(v.slug.startsWith(`${v.shadeCode.toLowerCase()}-`)).toBe(true);
-      expect(v.priceCents).toBe(2400);
+      expect(v.priceCents).toBe(1499);
       expect(v).not.toHaveProperty('stockQuantity'); // stock is never public
     }
   });

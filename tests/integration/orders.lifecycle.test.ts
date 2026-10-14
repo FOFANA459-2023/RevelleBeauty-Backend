@@ -12,6 +12,7 @@ let app: Express;
 let customerCookie: string;
 let adminCookie: string;
 let variantId = '';
+let unitPriceCents: number;
 let sessionId = '';
 let orderId = '';
 
@@ -72,6 +73,7 @@ describe('order lifecycle', () => {
   it('SECURITY: strips price fields from checkout via strict schema', async () => {
     const detail = await request(app).get('/api/products/high-shine-lip-oil');
     variantId = detail.body.product.variants[2].id;
+    unitPriceCents = detail.body.product.variants[2].priceCents;
 
     const res = await request(app)
       .post('/api/checkout/session')
@@ -91,7 +93,9 @@ describe('order lifecycle', () => {
       .send({ items: [{ variantId, quantity: 2 }], shipping: SHIPPING });
     expect(res.status).toBe(200);
     expect(res.body.orderNumber).toMatch(/^RB-\d+$/);
-    expect(res.body.totals.subtotalCents).toBe(4400);
+    // Priced off the catalog, not a baked-in figure — the server reprices
+    // every line anyway, and this should not need touching when prices move.
+    expect(res.body.totals.subtotalCents).toBe(unitPriceCents * 2);
     sessionId = res.body.sessionId;
     orderId = res.body.orderId;
   });
@@ -263,6 +267,6 @@ describe('order lifecycle', () => {
       .post('/api/cart/validate')
       .send({ items: [{ variantId, quantity: 1 }] });
     expect(res.status).toBe(200);
-    expect(res.body.lines[0].unitPriceCents).toBe(2200);
+    expect(res.body.lines[0].unitPriceCents).toBe(unitPriceCents);
   });
 });
