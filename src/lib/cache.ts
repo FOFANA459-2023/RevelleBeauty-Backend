@@ -21,6 +21,15 @@ interface Entry {
 
 const store = new Map<string, Entry>();
 
+/**
+ * A ceiling on entries. The catalog's own keys are few — a handful of lists,
+ * one per product, one per category — so this is never reached in normal use;
+ * it exists so no future caller can turn a request-shaped key into unbounded
+ * memory on a 1 GB box. Oldest insertion goes first, which for a TTL cache is
+ * also the nearest to expiry.
+ */
+const MAX_ENTRIES = 500;
+
 let hits = 0;
 let misses = 0;
 
@@ -47,6 +56,10 @@ export async function cached<T>(
   }
   misses++;
   const value = await loader();
+  if (store.size >= MAX_ENTRIES && !store.has(key)) {
+    const oldest = store.keys().next();
+    if (!oldest.done) store.delete(oldest.value);
+  }
   store.set(key, { value, expiresAt: now + ttlMs });
   return value;
 }

@@ -217,7 +217,10 @@ async function applyMigrations() {
   ).catch(() => ({ rows: [] }));
   const applied = new Set(rows.map((r) => r.filename));
 
-  for (const migFile of ['0011_real_lip_shades.sql', '0012_shade_catalog.sql']) {
+  for (const migFile of [
+    '0011_real_lip_shades.sql', '0012_shade_catalog.sql',
+    '0013_us_prices.sql', '0014_image_thumbnails.sql',
+  ]) {
     if (applied.has(migFile)) {
       console.log(`already applied: ${migFile}`);
       continue;
@@ -341,23 +344,29 @@ async function syncProduct(productSlug, plan, assetsRoot, totals) {
       ...c,
       raw,
       storagePath: `products/${product.id}/${hash}.webp`,
+      // Card-sized twin of the same source; cards and thumbnails read this.
+      storagePathSm: `products/${product.id}/${hash}-sm.webp`,
       isPrimary: index === 0,
       displayOrder: index + 1,
     };
   });
 
   const { rows: existing } = await pool.query(
-    `select id, storage_path from product_images where product_id = $1`, [product.id],
+    `select id, storage_path, storage_path_sm from product_images where product_id = $1`,
+    [product.id],
   );
-  const existingByPath = new Map(existing.map((r) => [r.storage_path, r.id]));
+  const existingByPath = new Map(existing.map((r) => [r.storage_path, r]));
   const wantedPaths = new Set(wanted.map((w) => w.storagePath));
   const toRemove = existing.filter((r) => !wantedPaths.has(r.storage_path));
   const toUpload = wanted.filter((w) => !existingByPath.has(w.storagePath));
+  // Rows that pre-date the derivative still need their small twin made.
+  const toThumb = wanted.filter((w) => !existingByPath.get(w.storagePath)?.storage_path_sm);
   const shadeLinked = wanted.filter((w) => w.variantId).length;
 
   console.log(
     `${productSlug}: ${wanted.length} photos (${shadeLinked} on shades) — ` +
-      `${toUpload.length} to upload, ${wanted.length - toUpload.length} kept, ` +
+      `${toUpload.length} to upload, ${toThumb.length - toUpload.length} to resize, ` +
+      `${wanted.length - toUpload.length} kept, ` +
       `${toRemove.length} rows to remove` +
       (plan.publish && product.status === 'draft' ? ', publish draft' : ''),
   );
@@ -375,6 +384,14 @@ async function syncProduct(productSlug, plan, assetsRoot, totals) {
     await putObject(w.storagePath, buf);
   }
 
+  // The card-sized twin. Quality can drop a little at this size without
+  // showing, and it is the file a shop page actually downloads.
+  for (const w of toThumb) {
+    const small = await sharp(w.raw).rotate().resize({ width: 640, withoutEnlargement: true })
+      .webp({ quality: 76 }).toBuffer();
+    await putObject(w.storagePathSm, small);
+  }
+
   const client = await pool.connect();
   try {
     await client.query('begin');
@@ -386,20 +403,23 @@ async function syncProduct(productSlug, plan, assetsRoot, totals) {
       ]);
     }
     for (const w of wanted) {
-      const id = existingByPath.get(w.storagePath);
-      if (id) {
+      const row = existingByPath.get(w.storagePath);
+      if (row) {
         await client.query(
           `update product_images
-              set variant_id = $2, alt_text = $3, is_primary = $4, display_order = $5
+              set variant_id = $2, alt_text = $3, is_primary = $4, display_order = $5,
+                  storage_path_sm = $6
             where id = $1`,
-          [id, w.variantId, w.altText, w.isPrimary, w.displayOrder],
+          [row.id, w.variantId, w.altText, w.isPrimary, w.displayOrder, w.storagePathSm],
         );
       } else {
         await client.query(
           `insert into product_images
-             (product_id, variant_id, storage_path, alt_text, width, height, is_primary, display_order)
-           values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-          [product.id, w.variantId, w.storagePath, w.altText, w.width, w.height, w.isPrimary, w.displayOrder],
+             (product_id, variant_id, storage_path, storage_path_sm, alt_text,
+              width, height, is_primary, display_order)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [product.id, w.variantId, w.storagePath, w.storagePathSm, w.altText,
+           w.width, w.height, w.isPrimary, w.displayOrder],
         );
       }
     }

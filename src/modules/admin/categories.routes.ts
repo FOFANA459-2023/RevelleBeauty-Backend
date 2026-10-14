@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { withId } from '../../middleware/validateParams.js';
 import type { Pool } from 'pg';
 import { conflict, notFound } from '../../lib/errors.js';
 import { ensureUniqueSlug } from '../../lib/slug.js';
@@ -41,7 +42,7 @@ export function adminCategoryRoutes(pool: Pool): Router {
     res.status(201).json({ ok: true, id: rows[0]!.id });
   });
 
-  r.patch('/categories/:id', async (req, res) => {
+  r.patch('/categories/:id', withId, async (req, res) => {
     const patch = categoryUpsertSchema.partial().strict().parse(req.body);
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -66,7 +67,7 @@ export function adminCategoryRoutes(pool: Pool): Router {
     res.json({ ok: true });
   });
 
-  r.delete('/categories/:id', async (req, res) => {
+  r.delete('/categories/:id', withId, async (req, res) => {
     const { rows } = await pool.query<{ products: string; children: string }>(
       `select (select count(*) from products where category_id = $1) as products,
               (select count(*) from categories where parent_id = $1) as children`,

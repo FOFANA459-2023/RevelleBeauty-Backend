@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { withSlug } from '../../middleware/validateParams.js';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import * as svc from './catalog.service.js';
@@ -24,7 +25,7 @@ export function catalogRoutes(pool: Pool): Router {
     res.json({ categories: await svc.listCategories(pool) });
   });
 
-  r.get('/categories/:slug', async (req, res) => {
+  r.get('/categories/:slug', withSlug, async (req, res) => {
     res.set('Cache-Control', CACHE);
     res.json({ category: await svc.getCategoryBySlug(pool, req.params.slug) });
   });
@@ -35,12 +36,12 @@ export function catalogRoutes(pool: Pool): Router {
     res.json(await svc.listProducts(pool, q));
   });
 
-  r.get('/products/:slug', async (req, res) => {
+  r.get('/products/:slug', withSlug, async (req, res) => {
     res.set('Cache-Control', CACHE);
     res.json({ product: await svc.getProductBySlug(pool, req.params.slug) });
   });
 
-  r.get('/products/:slug/related', async (req, res) => {
+  r.get('/products/:slug/related', withSlug, async (req, res) => {
     const limit = z.coerce.number().int().min(1).max(12).default(4).parse(req.query.limit);
     const payload = await cached(
       `catalog:related:${req.params.slug}:${limit}`,

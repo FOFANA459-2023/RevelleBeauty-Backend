@@ -114,6 +114,28 @@ describe('security posture', () => {
     expect(res.body.ignored).toBeDefined();
   });
 
+  it('rejects a malformed path parameter before it reaches the database', async () => {
+    // A slug the catalog could never have issued. Rejected at the edge as a
+    // client error, rather than reaching SQL and surfacing as a 500.
+    for (const slug of ['NOT_A_SLUG', 'bad..slug', 'drop%20table', 'a'.repeat(300)]) {
+      const res = await request(app).get(`/api/products/${slug}`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('validation_error');
+    }
+  });
+
+  it('keeps an oversized slug out of the related-products cache key', async () => {
+    const res = await request(app).get(`/api/products/${'z'.repeat(400)}/related`);
+    expect(res.status).toBe(400);
+  });
+
+  it('still serves the slugs the catalog does issue', async () => {
+    const ok = await request(app).get('/api/products/high-shine-lip-oil');
+    expect(ok.status).toBe(200);
+    const missing = await request(app).get('/api/products/no-such-product');
+    expect(missing.status).toBe(404); // well-formed, simply absent
+  });
+
   it('unknown API routes return a JSON 404, not a stack trace', async () => {
     const res = await request(app).get('/api/definitely-not-real');
     expect(res.status).toBe(404);

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { withId } from '../../middleware/validateParams.js';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { notFound } from '../../lib/errors.js';
@@ -65,7 +66,7 @@ export function adminOrderRoutes(pool: Pool): Router {
     });
   });
 
-  r.get('/orders/:id', async (req, res) => {
+  r.get('/orders/:id', withId, async (req, res) => {
     const { rows } = await pool.query(`select * from orders where id = $1`, [req.params.id]);
     const o = rows[0];
     if (!o) throw notFound('Order not found');
@@ -137,7 +138,7 @@ export function adminOrderRoutes(pool: Pool): Router {
 
   // Fulfillment pipeline: admin advances payment_received -> packaged -> shipped.
   // 'delivered' normally comes from the customer, but admin may set it too.
-  r.patch('/orders/:id/stage', async (req, res) => {
+  r.patch('/orders/:id/stage', withId, async (req, res) => {
     const { stage, note } = z
       .object({
         stage: z.enum(['payment_received', 'packaged', 'shipped', 'delivered']),
@@ -179,7 +180,7 @@ export function adminOrderRoutes(pool: Pool): Router {
     }
   });
 
-  r.patch('/orders/:id', async (req, res) => {
+  r.patch('/orders/:id', withId, async (req, res) => {
     const patch = orderUpdateSchema.parse(req.body);
     const sets: string[] = [];
     const params: unknown[] = [];

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { withId } from '../../middleware/validateParams.js';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import * as svc from './products.service.js';
@@ -19,7 +20,7 @@ export function adminProductRoutes(pool: Pool): Router {
     res.json(await svc.listAdminProducts(pool, q));
   });
 
-  r.get('/products/:id', async (req, res) => {
+  r.get('/products/:id', withId, async (req, res) => {
     res.json({ product: await svc.getAdminProduct(pool, req.params.id) });
   });
 
@@ -28,12 +29,12 @@ export function adminProductRoutes(pool: Pool): Router {
     res.status(201).json({ product: await svc.createProduct(pool, input) });
   });
 
-  r.patch('/products/:id', async (req, res) => {
+  r.patch('/products/:id', withId, async (req, res) => {
     const patch = productPatchSchema.parse(req.body);
     res.json({ product: await svc.updateProduct(pool, req.params.id, patch) });
   });
 
-  r.post('/products/:id/status', async (req, res) => {
+  r.post('/products/:id/status', withId, async (req, res) => {
     const { status } = z
       .object({ status: z.enum(['draft', 'active', 'archived']) })
       .strict()
@@ -41,7 +42,7 @@ export function adminProductRoutes(pool: Pool): Router {
     res.json({ product: await svc.updateProduct(pool, req.params.id, { status }) });
   });
 
-  r.delete('/products/:id', async (req, res) => {
+  r.delete('/products/:id', withId, async (req, res) => {
     await svc.archiveProduct(pool, req.params.id);
     res.status(204).end();
   });
@@ -52,29 +53,29 @@ export function adminProductRoutes(pool: Pool): Router {
     res.json({ ok: true });
   });
 
-  r.post('/products/:id/variants', async (req, res) => {
+  r.post('/products/:id/variants', withId, async (req, res) => {
     const input = variantUpsertSchema.parse(req.body);
     res.status(201).json({ product: await svc.createVariant(pool, req.params.id, input) });
   });
 
-  r.patch('/variants/:id', async (req, res) => {
+  r.patch('/variants/:id', withId, async (req, res) => {
     const patch = variantUpsertSchema.partial().strict().parse(req.body);
     await svc.updateVariant(pool, req.params.id, patch);
     res.json({ ok: true });
   });
 
-  r.patch('/variants/:id/stock', async (req, res) => {
+  r.patch('/variants/:id/stock', withId, async (req, res) => {
     const input = stockUpdateSchema.parse(req.body);
     await svc.adjustStock(pool, req.params.id, input);
     res.json({ ok: true });
   });
 
-  r.delete('/variants/:id', async (req, res) => {
+  r.delete('/variants/:id', withId, async (req, res) => {
     await svc.deleteVariant(pool, req.params.id);
     res.status(204).end();
   });
 
-  r.post('/products/:id/variants/reorder', async (req, res) => {
+  r.post('/products/:id/variants/reorder', withId, async (req, res) => {
     const { items } = reorderSchema.parse(req.body);
     await svc.reorder(pool, 'product_variants', items);
     res.json({ ok: true });

@@ -154,6 +154,7 @@ function mapAdminImage(i: Record<string, unknown>): ImageDTO {
   return {
     id: i.id as string,
     url: storage.publicUrl(i.storage_path as string),
+    thumbUrl: storage.publicUrl((i.storage_path_sm as string | null) ?? (i.storage_path as string)),
     altText: i.alt_text as string | null,
     width: i.width as number | null,
     height: i.height as number | null,

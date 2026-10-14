@@ -46,6 +46,7 @@ interface ImageJson {
   id: string;
   variant_id: string | null;
   storage_path: string;
+  storage_path_sm: string | null;
   alt_text: string | null;
   width: number | null;
   height: number | null;
@@ -96,6 +97,7 @@ const PRODUCT_SELECT = `
          coalesce((
            select json_agg(json_build_object(
              'id', i.id, 'variant_id', i.variant_id, 'storage_path', i.storage_path,
+             'storage_path_sm', i.storage_path_sm,
              'alt_text', i.alt_text, 'width', i.width, 'height', i.height,
              'is_primary', i.is_primary, 'display_order', i.display_order
            ) order by i.display_order)
@@ -107,10 +109,16 @@ const PRODUCT_SELECT = `
 
 /* ---------- mapping ---------- */
 
+/** The card-sized file where one exists, the full one where it does not. */
+function thumbPath(i: ImageJson): string {
+  return i.storage_path_sm ?? i.storage_path;
+}
+
 function mapImage(i: ImageJson): ImageDTO {
   return {
     id: i.id,
     url: storage.publicUrl(i.storage_path),
+    thumbUrl: storage.publicUrl(thumbPath(i)),
     altText: i.alt_text,
     width: i.width,
     height: i.height,
@@ -144,7 +152,7 @@ function toSummary(r: ProductRow): ProductSummaryDTO {
       shadeCode: v.shade_code,
       hexColor: v.hex_color,
       hexColorSecondary: v.hex_color_secondary,
-      imageUrls: (shotsByVariant.get(v.id) ?? []).map((i) => storage.publicUrl(i.storage_path)),
+      imageUrls: (shotsByVariant.get(v.id) ?? []).map((i) => storage.publicUrl(thumbPath(i))),
     }));
 
   return {
@@ -162,7 +170,7 @@ function toSummary(r: ProductRow): ProductSummaryDTO {
     primaryImage: primary ? mapImage(primary) : null,
     previewImageUrls: r.images_json
       .slice(0, SWATCH_PREVIEW_LIMIT)
-      .map((i) => storage.publicUrl(i.storage_path)),
+      .map((i) => storage.publicUrl(thumbPath(i))),
     swatches,
   };
 }

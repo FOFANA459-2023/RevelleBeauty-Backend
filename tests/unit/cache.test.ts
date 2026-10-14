@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cached, invalidateCatalog } from '../../src/lib/cache.js';
+import { cacheStats, cached, invalidateCatalog } from '../../src/lib/cache.js';
 
 describe('cache', () => {
   it('returns the cached value within TTL without re-running the loader', async () => {
@@ -47,5 +47,17 @@ describe('cache', () => {
     await expect(cached('session:abc', 1000, async () => 'x')).rejects.toThrow(/never be cached/);
     // no sneaking past with a prefix-ish name
     await expect(cached('catalogx:1', 1000, async () => 'x')).rejects.toThrow(/never be cached/);
+  });
+
+  it('refuses to grow without bound', async () => {
+    invalidateCatalog();
+    // Far more distinct keys than the ceiling; the map must not track them all.
+    for (let i = 0; i < 700; i++) {
+      await cached(`catalog:bound:${i}`, 60_000, async () => i);
+    }
+    expect(cacheStats().size).toBeLessThanOrEqual(500);
+    // and the most recent key is the one that survived
+    expect(await cached('catalog:bound:699', 60_000, async () => -1)).toBe(699);
+    invalidateCatalog();
   });
 });

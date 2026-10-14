@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { withId } from '../../middleware/validateParams.js';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { notFound } from '../../lib/errors.js';
@@ -53,7 +54,7 @@ export function accountRoutes(pool: Pool): Router {
     });
   });
 
-  r.get('/orders/:id', async (req, res) => {
+  r.get('/orders/:id', withId, async (req, res) => {
     const { rows } = await pool.query(
       `select * from orders where id = $1 and customer_id = $2`,
       [req.params.id, customerId(req)],
@@ -192,7 +193,7 @@ export function accountRoutes(pool: Pool): Router {
   });
 
   // Customer confirms delivery — reflects back to the admin timeline.
-  r.post('/orders/:id/confirm-delivery', async (req, res) => {
+  r.post('/orders/:id/confirm-delivery', withId, async (req, res) => {
     const client = await pool.connect();
     try {
       await client.query('begin');

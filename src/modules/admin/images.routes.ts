@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { withId } from '../../middleware/validateParams.js';
 import multer from 'multer';
 import sharp from 'sharp';
 import crypto from 'node:crypto';
@@ -28,7 +29,7 @@ function sniffImage(buf: Buffer): string | null {
 export function adminImageRoutes(pool: Pool): Router {
   const r = Router();
 
-  r.post('/products/:id/images', uploadLimiter, upload.single('file'), async (req, res) => {
+  r.post('/products/:id/images', withId, uploadLimiter, upload.single('file'), async (req, res) => {
     const productId = req.params.id;
     const file = req.file;
     if (!file) throw badRequest('No file uploaded');
@@ -87,7 +88,7 @@ export function adminImageRoutes(pool: Pool): Router {
     }
   });
 
-  r.patch('/images/:id', async (req, res) => {
+  r.patch('/images/:id', withId, async (req, res) => {
     const patch = imagePatchSchema.parse(req.body);
     const { rows } = await pool.query(`select * from product_images where id = $1`, [req.params.id]);
     const img = rows[0];
@@ -128,7 +129,7 @@ export function adminImageRoutes(pool: Pool): Router {
     });
   });
 
-  r.delete('/images/:id', async (req, res) => {
+  r.delete('/images/:id', withId, async (req, res) => {
     // Row first, then best-effort object removal — an orphaned object costs
     // nothing; an orphaned row renders a broken image.
     const { rows } = await pool.query(
