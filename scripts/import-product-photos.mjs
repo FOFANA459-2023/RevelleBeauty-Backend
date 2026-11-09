@@ -20,8 +20,10 @@
  * - The folders are the source of truth: image rows no longer wanted are
  *   removed. Their storage objects are deliberately kept — order_items
  *   snapshot image paths, so past orders must not lose thumbnails.
- * - Each photo is stored twice: ~1600px for the product page and ~640px for
- *   cards, thumbnails and hover reels (storage_path_sm).
+ * - Each photo is stored twice: ~1600px for the product page, and a 640px
+ *   square tile for cards, thumbnails and hover reels (storage_path_sm) —
+ *   product trimmed of its white margin and centred at a fixed fill, so every
+ *   card shows its product at the same scale with no empty bands.
  * - Within a shade, product shots on white lead and before/after cards follow,
  *   so a shade's window opens on the product itself.
  * - Idempotent: storage paths derive from the source file's content hash, so a
@@ -145,6 +147,69 @@ async function whiteness(file) {
   return white / (info.width * info.height);
 }
 
+/** Edge of the square card tile, and how much of it the product may fill. */
+const TILE = 640;
+const TILE_FILL = 0.86;
+/**
+ * Names the tile recipe. Tiles are served with a year-long cache, so a tile
+ * made differently must live at a different path — bump this whenever
+ * cardTile() changes and every tile is rebuilt under the new name.
+ */
+const TILE_VERSION = 'tile1';
+
+/** Median colour of the four corners — the photograph's own backdrop. */
+async function backdrop(flat) {
+  const { data, info } = await sharp(flat).resize(64, 64, { fit: 'fill' })
+    .raw().toBuffer({ resolveWithObject: true });
+  const px = [];
+  for (const [x0, y0] of [[0, 0], [58, 0], [0, 58], [58, 58]]) {
+    for (let y = y0; y < y0 + 6; y++) {
+      for (let x = x0; x < x0 + 6; x++) {
+        const i = (y * info.width + x) * info.channels;
+        px.push([data[i], data[i + 1], data[i + 2]]);
+      }
+    }
+  }
+  const med = (k) => px.map((p) => p[k]).sort((a, b) => a - b)[px.length >> 1];
+  return { r: med(0), g: med(1), b: med(2) };
+}
+
+/**
+ * The card tile. Product photography arrives on white in every shape — wide
+ * tubes, tall bottles — with most of each frame empty background, so fitting
+ * the file as-is into a card leaves bands and a small product. Instead:
+ *
+ *   on white  → trim the backdrop to the product itself, then centre it on a
+ *               square at a fixed fill, so every product sits at the same
+ *               scale. The square takes the photograph's own backdrop colour:
+ *               some are shot on off-white, and a pure-white square would show
+ *               the old photo's edge as a faint rectangle;
+ *   otherwise → (lifestyle, full-bleed shots) a square crop on the subject.
+ *
+ * Transparent PNGs are flattened onto white first, or their background would
+ * read as black.
+ */
+async function cardTile(raw) {
+  const flat = await sharp(raw).rotate().flatten({ background: '#ffffff' }).toBuffer();
+  const { data, info } = await sharp(flat).resize(64, 64, { fit: 'fill' })
+    .raw().toBuffer({ resolveWithObject: true });
+  let white = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    if (data[i] > 235 && data[i + 1] > 235 && data[i + 2] > 235) white++;
+  }
+  if (white / (info.width * info.height) > 0.45) {
+    const bg = await backdrop(flat);
+    const product = await sharp(flat).trim({ background: bg, threshold: 28 }).toBuffer();
+    const inner = Math.round(TILE * TILE_FILL);
+    const fitted = await sharp(product).resize(inner, inner, { fit: 'inside' }).toBuffer();
+    return sharp({ create: { width: TILE, height: TILE, channels: 3, background: bg } })
+      .composite([{ input: fitted, gravity: 'centre' }])
+      .webp({ quality: 78 }).toBuffer();
+  }
+  return sharp(flat).resize(TILE, TILE, { fit: 'cover', position: sharp.strategy.attention })
+    .webp({ quality: 76 }).toBuffer();
+}
+
 async function orderShade(dir) {
   const files = await Promise.all(listImages(dir).map(async (f) => {
     const full = path.join(dir, f);
@@ -214,8 +279,9 @@ async function syncProduct(productSlug, assetsRoot, totals) {
       ...c,
       raw,
       storagePath: `products/${product.id}/${hash}.webp`,
-      // Card-sized twin of the same source; cards and thumbnails read this.
-      storagePathSm: `products/${product.id}/${hash}-sm.webp`,
+      // Square card tile of the same source; cards, thumbnails and hover reels
+      // read this. Named by recipe version — see TILE_VERSION.
+      storagePathSm: `products/${product.id}/${hash}-${TILE_VERSION}.webp`,
       isPrimary: index === 0,
       displayOrder: index + 1,
     };
@@ -234,8 +300,10 @@ async function syncProduct(productSlug, assetsRoot, totals) {
   const wantedPaths = new Set(unique.map((w) => w.storagePath));
   const toRemove = existing.filter((r) => !wantedPaths.has(r.storage_path));
   const toUpload = unique.filter((w) => !existingByPath.has(w.storagePath));
-  // Rows that pre-date the derivative still need their small twin made.
-  const toThumb = unique.filter((w) => !existingByPath.get(w.storagePath)?.storage_path_sm);
+  // Any row whose tile is missing or from an older recipe gets a fresh one.
+  const toThumb = unique.filter(
+    (w) => existingByPath.get(w.storagePath)?.storage_path_sm !== w.storagePathSm,
+  );
   const shadeLinked = unique.filter((w) => w.variantId).length;
 
   console.log(
@@ -256,12 +324,9 @@ async function syncProduct(productSlug, assetsRoot, totals) {
     w.height = meta.height ?? null;
     await putObject(w.storagePath, buf);
   }
-  // The card-sized twin. Quality can drop a little at this size without
-  // showing, and it is the file a shop page actually downloads.
+  // The square card tile — the file a shop page actually downloads.
   for (const w of toThumb) {
-    const small = await sharp(w.raw).rotate().resize({ width: 640, withoutEnlargement: true })
-      .webp({ quality: 76 }).toBuffer();
-    await putObject(w.storagePathSm, small);
+    await putObject(w.storagePathSm, await cardTile(w.raw));
   }
 
   const client = await pool.connect();
