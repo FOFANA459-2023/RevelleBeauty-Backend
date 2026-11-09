@@ -38,6 +38,7 @@ import { adminProductRoutes } from './modules/admin/products.routes.js';
 import { adminImageRoutes } from './modules/admin/images.routes.js';
 import { adminCategoryRoutes } from './modules/admin/categories.routes.js';
 import { adminOrderRoutes } from './modules/admin/orders.routes.js';
+import { adminReviewRoutes, reviewRoutes } from './modules/reviews/reviews.routes.js';
 
 export function buildApp(pool: Pool): express.Express {
   const app = express();
@@ -75,6 +76,7 @@ export function buildApp(pool: Pool): express.Express {
   api.use(globalLimiter);
 
   api.use(catalogRoutes(pool));
+  api.use(reviewRoutes(pool));
   api.use('/checkout', noStore); // order/session payloads are personal
   api.use('/checkout/session', checkoutLimiter);
   api.use(checkoutRoutes(pool));
@@ -92,6 +94,7 @@ export function buildApp(pool: Pool): express.Express {
   api.use('/admin', requireAdmin, adminImageRoutes(pool));
   api.use('/admin', requireAdmin, adminCategoryRoutes(pool));
   api.use('/admin', requireAdmin, adminOrderRoutes(pool));
+  api.use('/admin', requireAdmin, adminReviewRoutes(pool));
 
   app.use('/api', api);
 

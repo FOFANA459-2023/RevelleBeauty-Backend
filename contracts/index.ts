@@ -4,3 +4,4 @@ export type * from './cart';
 export type * from './order';
 export type * from './admin';
 export type * from './customer';
+export type * from './review';

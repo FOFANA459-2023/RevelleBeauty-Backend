@@ -1,4 +1,5 @@
 import type { Money } from './common';
+import type { RatingSummaryDTO } from './review';
 
 export type ProductStatus = 'draft' | 'active' | 'archived';
 
@@ -76,6 +77,8 @@ export interface ProductSummaryDTO {
    */
   previewImageUrls: string[];
   swatches: SwatchDTO[];
+  /** Published customer reviews; null until the first one. */
+  rating: RatingSummaryDTO | null;
 }
 
 export interface ProductDetailDTO extends ProductSummaryDTO {

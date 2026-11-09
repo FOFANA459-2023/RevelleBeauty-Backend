@@ -73,6 +73,8 @@ interface ProductRow {
   meta_description: string | null;
   variants_json: VariantJson[];
   images_json: ImageJson[];
+  rating_average: string | null;
+  rating_count: number;
   total?: string;
 }
 
@@ -103,9 +105,15 @@ const PRODUCT_SELECT = `
              'is_primary', i.is_primary, 'display_order', i.display_order
            ) order by i.display_order)
            from product_images i where i.product_id = p.id
-         ), '[]'::json) as images_json
+         ), '[]'::json) as images_json,
+         rv.rating_average, coalesce(rv.rating_count, 0)::int as rating_count
     from products p
     join categories c on c.id = p.category_id
+    left join lateral (
+      select round(avg(r.rating), 1) as rating_average, count(*) as rating_count
+        from product_reviews r
+       where r.product_id = p.id and r.status = 'published'
+    ) rv on true
 `;
 
 /* ---------- mapping ---------- */
@@ -175,6 +183,9 @@ function toSummary(r: ProductRow): ProductSummaryDTO {
       .slice(0, SWATCH_PREVIEW_LIMIT)
       .map((i) => storage.publicUrl(thumbPath(i))),
     swatches,
+    rating: r.rating_count > 0
+      ? { average: Number(r.rating_average), count: r.rating_count }
+      : null,
   };
 }
 
