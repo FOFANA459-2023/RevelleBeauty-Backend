@@ -4,7 +4,10 @@ export type ProductStatus = 'draft' | 'active' | 'archived';
 
 export interface ImageDTO {
   id: string;
-  /** Full size (~1600px) — the product page, where someone looks closely. */
+  /**
+   * Large (~1200px) square tile, product trimmed and centred — the product
+   * page's gallery. Falls back to the original for admin uploads.
+   */
   url: string;
   /**
    * Card-sized (~640px). Grids, thumbnails and hover reels should use this;

@@ -47,6 +47,7 @@ interface ImageJson {
   variant_id: string | null;
   storage_path: string;
   storage_path_sm: string | null;
+  storage_path_lg: string | null;
   alt_text: string | null;
   width: number | null;
   height: number | null;
@@ -97,7 +98,7 @@ const PRODUCT_SELECT = `
          coalesce((
            select json_agg(json_build_object(
              'id', i.id, 'variant_id', i.variant_id, 'storage_path', i.storage_path,
-             'storage_path_sm', i.storage_path_sm,
+             'storage_path_sm', i.storage_path_sm, 'storage_path_lg', i.storage_path_lg,
              'alt_text', i.alt_text, 'width', i.width, 'height', i.height,
              'is_primary', i.is_primary, 'display_order', i.display_order
            ) order by i.display_order)
@@ -117,7 +118,9 @@ function thumbPath(i: ImageJson): string {
 function mapImage(i: ImageJson): ImageDTO {
   return {
     id: i.id,
-    url: storage.publicUrl(i.storage_path),
+    // The square stage tile where one exists: the gallery shows it, and so
+    // does a cart line. The original stays on disk for order history.
+    url: storage.publicUrl(i.storage_path_lg ?? i.storage_path),
     thumbUrl: storage.publicUrl(thumbPath(i)),
     altText: i.alt_text,
     width: i.width,

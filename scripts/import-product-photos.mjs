@@ -20,10 +20,12 @@
  * - The folders are the source of truth: image rows no longer wanted are
  *   removed. Their storage objects are deliberately kept — order_items
  *   snapshot image paths, so past orders must not lose thumbnails.
- * - Each photo is stored twice: ~1600px for the product page, and a 640px
- *   square tile for cards, thumbnails and hover reels (storage_path_sm) —
- *   product trimmed of its white margin and centred at a fixed fill, so every
- *   card shows its product at the same scale with no empty bands.
+ * - Each photo is stored three ways: the original (~1600px, kept for order
+ *   history and admin), a 640px square tile for cards, thumbnails and hover
+ *   reels (storage_path_sm), and a 1200px square tile for the product page's
+ *   gallery (storage_path_lg). Both tiles trim the product of its backdrop and
+ *   centre it at one fixed fill, so a photo reads at the same scale everywhere
+ *   and nothing shows empty bands.
  * - Within a shade, product shots on white lead and before/after cards follow,
  *   so a shade's window opens on the product itself.
  * - Idempotent: storage paths derive from the source file's content hash, so a
@@ -147,15 +149,18 @@ async function whiteness(file) {
   return white / (info.width * info.height);
 }
 
-/** Edge of the square card tile, and how much of it the product may fill. */
+/** Square tile edges: the card's, and the product page stage's. */
 const TILE = 640;
+const STAGE = 1200;
+/** How much of a tile the product may fill — the same for both, so a photo
+ *  reads at one scale from grid to product page. */
 const TILE_FILL = 0.86;
 /**
  * Names the tile recipe. Tiles are served with a year-long cache, so a tile
  * made differently must live at a different path — bump this whenever
  * cardTile() changes and every tile is rebuilt under the new name.
  */
-const TILE_VERSION = 'tile1';
+const TILE_VERSION = 'tile2';
 
 /** Median colour of the four corners — the photograph's own backdrop. */
 async function backdrop(flat) {
@@ -175,6 +180,26 @@ async function backdrop(flat) {
 }
 
 /**
+ * Median colour of a strip along one edge — 'top', 'bottom', 'left' or
+ * 'right'. Used to extend an image into the square it does not fill.
+ */
+async function edgeColour(flat, side) {
+  const { data, info } = await sharp(flat).resize(96, 96, { fit: 'fill' })
+    .raw().toBuffer({ resolveWithObject: true });
+  const px = [];
+  for (let i = 0; i < 96; i++) {
+    for (let d = 0; d < 3; d++) {
+      const [x, y] = side === 'top' ? [i, d] : side === 'bottom' ? [i, 95 - d]
+        : side === 'left' ? [d, i] : [95 - d, i];
+      const k = (y * info.width + x) * info.channels;
+      px.push([data[k], data[k + 1], data[k + 2]]);
+    }
+  }
+  const med = (c) => px.map((p) => p[c]).sort((a, b) => a - b)[px.length >> 1];
+  return `rgb(${med(0)},${med(1)},${med(2)})`;
+}
+
+/**
  * The card tile. Product photography arrives on white in every shape — wide
  * tubes, tall bottles — with most of each frame empty background, so fitting
  * the file as-is into a card leaves bands and a small product. Instead:
@@ -184,12 +209,20 @@ async function backdrop(flat) {
  *               scale. The square takes the photograph's own backdrop colour:
  *               some are shot on off-white, and a pure-white square would show
  *               the old photo's edge as a faint rectangle;
- *   otherwise → (lifestyle, full-bleed shots) a square crop on the subject.
+ *   near-square full-bleed shots (lips, lifestyle) → a square crop on the
+ *               subject; little is lost;
+ *   wide or tall designed graphics (before/after cards, line sheets) → the
+ *               whole image, never cropped: cropping one cut off the "after"
+ *               half of a before/after card, which is what the card is for.
+ *               The square around it is filled with the image's own edge
+ *               colours — the band above takes the top edge's colour, the band
+ *               below the bottom's — so it reads as the card's own ground
+ *               rather than as empty mat.
  *
  * Transparent PNGs are flattened onto white first, or their background would
  * read as black.
  */
-async function cardTile(raw) {
+async function squareTile(raw, edge, quality) {
   const flat = await sharp(raw).rotate().flatten({ background: '#ffffff' }).toBuffer();
   const { data, info } = await sharp(flat).resize(64, 64, { fit: 'fill' })
     .raw().toBuffer({ resolveWithObject: true });
@@ -200,26 +233,74 @@ async function cardTile(raw) {
   if (white / (info.width * info.height) > 0.45) {
     const bg = await backdrop(flat);
     const product = await sharp(flat).trim({ background: bg, threshold: 28 }).toBuffer();
-    const inner = Math.round(TILE * TILE_FILL);
+    const inner = Math.round(edge * TILE_FILL);
     const fitted = await sharp(product).resize(inner, inner, { fit: 'inside' }).toBuffer();
-    return sharp({ create: { width: TILE, height: TILE, channels: 3, background: bg } })
+    return sharp({ create: { width: edge, height: edge, channels: 3, background: bg } })
       .composite([{ input: fitted, gravity: 'centre' }])
-      .webp({ quality: 78 }).toBuffer();
+      .webp({ quality }).toBuffer();
   }
-  return sharp(flat).resize(TILE, TILE, { fit: 'cover', position: sharp.strategy.attention })
-    .webp({ quality: 76 }).toBuffer();
+  const meta = await sharp(flat).metadata();
+  const aspect = meta.width / meta.height;
+  // A square crop keeps min(aspect, 1/aspect) of the picture.
+  if (Math.min(aspect, 1 / aspect) >= 0.85) {
+    return sharp(flat).resize(edge, edge, { fit: 'cover', position: sharp.strategy.attention })
+      .webp({ quality: quality - 2 }).toBuffer();
+  }
+  const wide = aspect > 1;
+  const [a, b] = wide
+    ? [await edgeColour(flat, 'top'), await edgeColour(flat, 'bottom')]
+    : [await edgeColour(flat, 'left'), await edgeColour(flat, 'right')];
+  const ground = Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${edge}" height="${edge}">` +
+      (wide
+        ? `<rect width="${edge}" height="${edge / 2}" fill="${a}"/>` +
+          `<rect y="${edge / 2}" width="${edge}" height="${edge / 2}" fill="${b}"/>`
+        : `<rect width="${edge / 2}" height="${edge}" fill="${a}"/>` +
+          `<rect x="${edge / 2}" width="${edge / 2}" height="${edge}" fill="${b}"/>`) +
+      `</svg>`,
+  );
+  const whole = await sharp(flat).resize(edge, edge, { fit: 'inside' }).toBuffer();
+  return sharp(ground).composite([{ input: whole, gravity: 'centre' }])
+    .webp({ quality: quality - 2 }).toBuffer();
 }
 
+/** The grid's tile: small, because a shop page downloads a dozen of them. */
+const cardTile = (raw) => squareTile(raw, TILE, 78);
+/** The product page's tile: large, because someone is looking closely. */
+const stageTile = (raw) => squareTile(raw, STAGE, 84);
+
+/** Width / height of the product itself once its backdrop is trimmed away. */
+async function productAspect(file) {
+  const flat = await sharp(file).rotate().flatten({ background: '#ffffff' }).toBuffer();
+  const { info } = await sharp(flat).trim({ background: await backdrop(flat), threshold: 28 })
+    .toBuffer({ resolveWithObject: true });
+  return info.width / info.height;
+}
+
+/**
+ * Display order for a folder of photographs. A gallery opens on its first one,
+ * so it should be the product filling the square well:
+ *
+ *   1. product on white, upright or squarish — fills the tile;
+ *   2. product on white, lying wide (a horizontal tube) — necessarily a thin
+ *      strip in a square, so never the one a shade opens on when it has an
+ *      upright shot;
+ *   3. everything else — lifestyle, swatches, line sheets;
+ *   4. before/after cards last.
+ *
+ * Names break ties, so a folder orders the same way on every run.
+ */
 async function orderShade(dir) {
   const files = await Promise.all(listImages(dir).map(async (f) => {
     const full = path.join(dir, f);
-    return { file: full, card: /before\s*and\s*after/i.test(f), white: await whiteness(full) };
+    const card = /before\s*and\s*after/i.test(f);
+    const onWhite = (await whiteness(full)) > 0.45;
+    const lying = onWhite && (await productAspect(full)) > 1.3;
+    const rank = card ? 3 : !onWhite ? 2 : lying ? 1 : 0;
+    return { file: full, rank };
   }));
-  // product on white first, then everything else; cards last; names to break ties
   return files.sort((a, b) =>
-    Number(a.card) - Number(b.card) ||
-    Number(b.white > 0.45) - Number(a.white > 0.45) ||
-    naturally(path.basename(a.file), path.basename(b.file)),
+    a.rank - b.rank || naturally(path.basename(a.file), path.basename(b.file)),
   ).map((f) => f.file);
 }
 
@@ -252,8 +333,8 @@ async function collect(dir, productSlug, product, variants) {
       out.push({ file, variantId: v.id, altText: `${product.name} — ${label}` });
     }
   }
-  for (const f of listImages(path.join(dir, 'shared')).sort(naturally)) {
-    out.push({ file: path.join(dir, 'shared', f), variantId: null, altText: product.name });
+  for (const file of await orderShade(path.join(dir, 'shared'))) {
+    out.push({ file, variantId: null, altText: product.name });
   }
   return out;
 }
@@ -282,6 +363,7 @@ async function syncProduct(productSlug, assetsRoot, totals) {
       // Square card tile of the same source; cards, thumbnails and hover reels
       // read this. Named by recipe version — see TILE_VERSION.
       storagePathSm: `products/${product.id}/${hash}-${TILE_VERSION}.webp`,
+      storagePathLg: `products/${product.id}/${hash}-${TILE_VERSION}-lg.webp`,
       isPrimary: index === 0,
       displayOrder: index + 1,
     };
@@ -293,7 +375,8 @@ async function syncProduct(productSlug, assetsRoot, totals) {
   const unique = wanted.filter((w) => !seen.has(w.storagePath) && seen.add(w.storagePath));
 
   const { rows: existing } = await pool.query(
-    `select id, storage_path, storage_path_sm from product_images where product_id = $1`,
+    `select id, storage_path, storage_path_sm, storage_path_lg
+       from product_images where product_id = $1`,
     [product.id],
   );
   const existingByPath = new Map(existing.map((r) => [r.storage_path, r]));
@@ -303,6 +386,9 @@ async function syncProduct(productSlug, assetsRoot, totals) {
   // Any row whose tile is missing or from an older recipe gets a fresh one.
   const toThumb = unique.filter(
     (w) => existingByPath.get(w.storagePath)?.storage_path_sm !== w.storagePathSm,
+  );
+  const toStage = unique.filter(
+    (w) => existingByPath.get(w.storagePath)?.storage_path_lg !== w.storagePathLg,
   );
   const shadeLinked = unique.filter((w) => w.variantId).length;
 
@@ -328,6 +414,10 @@ async function syncProduct(productSlug, assetsRoot, totals) {
   for (const w of toThumb) {
     await putObject(w.storagePathSm, await cardTile(w.raw));
   }
+  // The square stage tile — what the product page's sliding window shows.
+  for (const w of toStage) {
+    await putObject(w.storagePathLg, await stageTile(w.raw));
+  }
 
   const client = await pool.connect();
   try {
@@ -345,18 +435,19 @@ async function syncProduct(productSlug, assetsRoot, totals) {
         await client.query(
           `update product_images
               set variant_id = $2, alt_text = $3, is_primary = $4, display_order = $5,
-                  storage_path_sm = $6
+                  storage_path_sm = $6, storage_path_lg = $7
             where id = $1`,
-          [row.id, w.variantId, w.altText, w.isPrimary, w.displayOrder, w.storagePathSm],
+          [row.id, w.variantId, w.altText, w.isPrimary, w.displayOrder,
+           w.storagePathSm, w.storagePathLg],
         );
       } else {
         await client.query(
           `insert into product_images
-             (product_id, variant_id, storage_path, storage_path_sm, alt_text,
-              width, height, is_primary, display_order)
-           values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [product.id, w.variantId, w.storagePath, w.storagePathSm, w.altText,
-           w.width, w.height, w.isPrimary, w.displayOrder],
+             (product_id, variant_id, storage_path, storage_path_sm, storage_path_lg,
+              alt_text, width, height, is_primary, display_order)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [product.id, w.variantId, w.storagePath, w.storagePathSm, w.storagePathLg,
+           w.altText, w.width, w.height, w.isPrimary, w.displayOrder],
         );
       }
     }
@@ -390,7 +481,7 @@ async function main() {
 
   const { rows } = await pool.query(`
     select p.slug, count(i.id)::int images, count(i.variant_id)::int shade_linked,
-           count(i.storage_path_sm)::int with_thumb
+           count(i.storage_path_sm)::int with_thumb, count(i.storage_path_lg)::int with_stage
     from products p join product_images i on i.product_id = p.id
     group by p.slug order by p.slug`);
   console.table(rows);
