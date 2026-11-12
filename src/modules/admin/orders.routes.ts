@@ -116,6 +116,7 @@ export function adminOrderRoutes(pool: Pool): Router {
         trackingNumber: o.tracking_number,
         trackingUrl: o.tracking_url,
         adminNotes: o.admin_notes,
+        customerNote: o.customer_note ?? null,
         createdAt: o.created_at,
         paidAt: o.paid_at,
         fulfilledAt: o.fulfilled_at,
@@ -182,6 +183,34 @@ export function adminOrderRoutes(pool: Pool): Router {
 
   r.patch('/orders/:id', withId, async (req, res) => {
     const patch = orderUpdateSchema.parse(req.body);
+
+    // A pre-order marked paid goes through the same path as an online
+    // payment: payment recorded, stock taken, the customer's timeline
+    // updated. It is the one way a pre-order's money becomes real.
+    if (patch.status === 'paid') {
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        const { rowCount } = await client.query(
+          `update orders set status = 'pending' where id = $1 and status = 'preorder'`,
+          [req.params.id],
+        );
+        if (rowCount) {
+          await client.query(
+            `select mark_order_paid($1, $2, null, null, null, null, null, $3)`,
+            [req.params.id, `manual_${req.params.id}`, JSON.stringify({ manual: true, at: new Date().toISOString() })],
+          );
+          patch.status = undefined;
+        }
+        await client.query('commit');
+      } catch (err) {
+        await client.query('rollback');
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
     const sets: string[] = [];
     const params: unknown[] = [];
     const push = (col: string, val: unknown) => {
@@ -238,11 +267,11 @@ export function adminOrderRoutes(pool: Pool): Router {
     }>(`
       select
         (select count(*) from orders where created_at >= date_trunc('day', now())
-          and status in ('paid','fulfilled','needs_review')) as orders_today,
+          and status in ('paid','fulfilled','needs_review','preorder')) as orders_today,
         (select coalesce(sum(total_cents), 0) from orders
           where paid_at >= now() - interval '30 days'
             and payment_status = 'paid') as revenue_30d,
-        (select count(*) from orders where status = 'paid') as pending_fulfillment,
+        (select count(*) from orders where status in ('paid','preorder')) as pending_fulfillment,
         (select count(*) from orders where status = 'needs_review') as oversold_count
     `);
     const { rows: lowStock } = await pool.query(`

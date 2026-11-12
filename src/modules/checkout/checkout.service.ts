@@ -5,6 +5,7 @@ import type {
   CreateCheckoutSessionResponse,
   OrderConfirmation,
   OrderConfirmationResponse,
+  PreorderResponse,
 } from '@contracts/index';
 import { env, isProd, stripeEnabled } from '../../config/env.js';
 import { badRequest, conflict, notFound, unavailable } from '../../lib/errors.js';
@@ -13,6 +14,14 @@ import { storage } from '../../lib/storage.js';
 import { invalidateCatalog } from '../../lib/cache.js';
 import { priceCart } from './pricing.service.js';
 import { getSettings } from '../catalog/catalog.service.js';
+import { sendMail } from '../../lib/mailer.js';
+import { sendStoreWhatsApp } from '../../lib/whatsapp.js';
+import {
+  customerOrderEmail,
+  storeOrderEmail,
+  storeOrderWhatsApp,
+  type OrderForMessage,
+} from '../../lib/emails/orderMessages.js';
 
 export const stripe = stripeEnabled
   ? new Stripe(env.STRIPE_SECRET_KEY!, { apiVersion: '2025-08-27.basil' })
@@ -36,12 +45,25 @@ export interface CheckoutCustomer {
   email: string;
 }
 
-export async function createCheckoutSession(
+interface CreatedOrder {
+  orderId: string;
+  orderNumber: string;
+  lines: Awaited<ReturnType<typeof priceCart>>['lines'];
+  totals: { subtotalCents: number; shippingCents: number; totalCents: number; currency: string };
+}
+
+/**
+ * Prices the cart server-side and writes the order + item snapshots in one
+ * transaction. 'pending' orders wait 30 minutes for a payment; 'preorder'
+ * orders do not expire.
+ */
+async function createOrder(
   pool: Pool,
   items: CartItemInput[],
   customer: CheckoutCustomer,
   shipping: CheckoutShipping,
-): Promise<CreateCheckoutSessionResponse> {
+  opts: { status: 'pending' | 'preorder'; note?: string | null },
+): Promise<CreatedOrder> {
   const settings = await getSettings(pool);
   if (!settings.checkoutEnabled) throw unavailable('Checkout is temporarily disabled');
 
@@ -63,7 +85,7 @@ export async function createCheckoutSession(
   const shippingCents = freeShipping ? 0 : settings.flatShippingCents;
   const totalCents = subtotalCents + shippingCents;
 
-  // Pending order + snapshot items BEFORE the payment session exists.
+  // Order + snapshot items BEFORE any payment session exists.
   const client = await pool.connect();
   let orderId: string;
   let orderNumber: string;
@@ -74,15 +96,19 @@ export async function createCheckoutSession(
          (status, customer_id, email, customer_name, phone,
           shipping_name, shipping_line1, shipping_line2, shipping_city,
           shipping_state, shipping_postal_code, shipping_country,
-          currency, subtotal_cents, shipping_cents, total_cents, expires_at)
-       values ('pending', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-               $12, $13, $14, $15, now() + interval '30 minutes')
+          currency, subtotal_cents, shipping_cents, total_cents, expires_at,
+          customer_note)
+       values ($16::order_status, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+               $12, $13, $14, $15,
+               case when $16 = 'pending' then now() + interval '30 minutes' end,
+               $17)
        returning id, order_number`,
       [
         customer.id, customer.email, shipping.name, shipping.phone,
         shipping.name, shipping.line1, shipping.line2, shipping.city,
         shipping.state, shipping.postalCode, shipping.country,
         settings.currency, subtotalCents, shippingCents, totalCents,
+        opts.status, opts.note ?? null,
       ],
     );
     orderId = rows[0]!.id;
@@ -96,7 +122,7 @@ export async function createCheckoutSession(
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [
           orderId, l.productId, l.variantId, l.productName, l.productSlug,
-          l.variantName, l.hexColor, null,
+          l.variantName, l.hexColor, l.shadeCode ?? null,
           l.imageUrl ? stripPublicUrl(l.imageUrl) : null,
           l.unitPriceCents, l.quantity,
         ],
@@ -110,12 +136,25 @@ export async function createCheckoutSession(
     client.release();
   }
 
-  const totals = {
-    subtotalCents,
-    shippingCents,
-    totalCents,
-    currency: settings.currency,
+  return {
+    orderId,
+    orderNumber,
+    lines,
+    totals: { subtotalCents, shippingCents, totalCents, currency: settings.currency },
   };
+}
+
+export async function createCheckoutSession(
+  pool: Pool,
+  items: CartItemInput[],
+  customer: CheckoutCustomer,
+  shipping: CheckoutShipping,
+): Promise<CreateCheckoutSessionResponse> {
+  const { orderId, orderNumber, lines, totals } = await createOrder(
+    pool, items, customer, shipping, { status: 'pending' },
+  );
+  const { shippingCents } = totals;
+  const settings = await getSettings(pool);
 
   if (!stripe) {
     // Dev mock mode: no Stripe keys yet. The frontend redirects to a local
@@ -183,6 +222,101 @@ export async function createCheckoutSession(
   ]);
 
   return { checkoutUrl: session.url!, sessionId: session.id, orderId, orderNumber, totals };
+}
+
+/* ---------- pre-order (no online payment) ---------- */
+
+/**
+ * Places a pre-order: the order is recorded, nothing is charged and stock is
+ * left alone (the store confirms availability). The store is emailed and
+ * WhatsApped and the customer emailed; a notification failure is logged and
+ * never fails the order, which is already safely stored.
+ */
+export async function placePreorder(
+  pool: Pool,
+  items: CartItemInput[],
+  customer: CheckoutCustomer,
+  shipping: CheckoutShipping,
+  note: string | null,
+): Promise<PreorderResponse> {
+  if (env.CHECKOUT_MODE !== 'preorder') throw badRequest('Pre-orders are not open');
+  const { orderId, orderNumber, totals } = await createOrder(
+    pool, items, customer, shipping, { status: 'preorder', note },
+  );
+  // The confirmation page reads orders by this reference; for a pre-order it
+  // is simply a second unguessable id.
+  const reference = `preorder_${orderId}`;
+  await pool.query(`update orders set stripe_checkout_session_id = $1 where id = $2`, [reference, orderId]);
+
+  await notifyNewOrder(pool, orderId);
+  return { reference, orderId, orderNumber, totals };
+}
+
+export async function loadOrderForMessage(pool: Pool, orderId: string): Promise<OrderForMessage> {
+  const { rows } = await pool.query(`select * from orders where id = $1`, [orderId]);
+  const o = rows[0];
+  if (!o) throw notFound('Order not found');
+  const { rows: items } = await pool.query(
+    `select * from order_items where order_id = $1 order by created_at`,
+    [orderId],
+  );
+  return {
+    id: o.id,
+    orderNumber: o.order_number,
+    placedAt: new Date(o.created_at),
+    customerName: o.customer_name ?? o.shipping_name ?? 'Customer',
+    email: o.email,
+    phone: o.phone,
+    note: o.customer_note,
+    currency: o.currency.trim(),
+    subtotalCents: o.subtotal_cents,
+    shippingCents: o.shipping_cents,
+    totalCents: o.total_cents,
+    shipping: {
+      name: o.shipping_name,
+      line1: o.shipping_line1,
+      line2: o.shipping_line2,
+      city: o.shipping_city,
+      state: o.shipping_state,
+      postalCode: o.shipping_postal_code,
+      country: (o.shipping_country ?? '').trim(),
+    },
+    items: items.map((i) => ({
+      productName: i.product_name,
+      // "HS02 Rosy Kiss": the code is what is printed on the stock.
+      variantName: i.sku && i.variant_name !== 'Default' ? `${i.sku} ${i.variant_name}` : i.variant_name,
+      quantity: i.quantity,
+      unitPriceCents: i.unit_price_cents,
+      lineTotalCents: i.line_total_cents,
+      imageUrl: i.image_path ? absoluteUrl(storage.publicUrl(i.image_path)) : null,
+    })),
+  };
+}
+
+/** Emails are read far from the site: a relative /uploads/... link would not load. */
+function absoluteUrl(url: string): string {
+  return url.startsWith('/') ? `${env.FRONTEND_URL}${url}` : url;
+}
+
+async function notifyNewOrder(pool: Pool, orderId: string): Promise<void> {
+  const order = await loadOrderForMessage(pool, orderId);
+  const adminUrl = `${env.FRONTEND_URL}/admin/orders/${order.id}`;
+  const jobs: [string, Promise<void>][] = [
+    ['customer email', sendMail(customerOrderEmail(order, {
+      storeWhatsapp: env.STORE_WHATSAPP ?? null,
+      accountUrl: `${env.FRONTEND_URL}/account/orders`,
+    }))],
+    ['store whatsapp', sendStoreWhatsApp(storeOrderWhatsApp(order, { adminUrl }))],
+  ];
+  if (env.STORE_ORDER_EMAIL) {
+    jobs.push(['store email', sendMail(storeOrderEmail(order, { to: env.STORE_ORDER_EMAIL, adminUrl }))]);
+  }
+  const results = await Promise.allSettled(jobs.map(([, p]) => p));
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      logger.error({ err: r.reason, orderNumber: order.orderNumber }, `pre-order ${jobs[i]![0]} failed`);
+    }
+  });
 }
 
 function stripPublicUrl(url: string): string {
@@ -261,6 +395,9 @@ export async function getOrderConfirmation(
     return { status: 'processing', order: null };
   }
 
+  if (order.status === 'preorder') {
+    return { status: 'preorder', order: await buildConfirmation(pool, order) };
+  }
   if (order.status === 'pending') return { status: 'processing', order: null };
   if (order.status === 'expired' || order.status === 'cancelled') {
     return { status: 'expired', order: null };

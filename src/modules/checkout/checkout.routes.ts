@@ -36,9 +36,37 @@ const createSessionSchema = z
   })
   .strict();
 
+const preorderSchema = z
+  .object({
+    items: z.array(cartItemSchema).min(1).max(env.MAX_CART_LINES),
+    shipping: shippingSchema,
+    saveAsDefault: z.boolean().optional(),
+    note: z
+      .string()
+      .max(2000)
+      .transform((v) => v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim())
+      .pipe(z.string().max(500))
+      .nullish()
+      .transform((v) => v || null),
+  })
+  .strict();
+
 const validateSchema = z
   .object({ items: z.array(cartItemSchema).min(0).max(env.MAX_CART_LINES) })
   .strict();
+
+async function saveDefaultAddress(
+  pool: Pool,
+  id: string,
+  s: z.infer<typeof shippingSchema>,
+): Promise<void> {
+  await pool.query(
+    `update customers set phone = $2, addr_line1 = $3, addr_line2 = $4,
+            addr_city = $5, addr_state = $6, addr_postal_code = $7, addr_country = $8
+      where id = $1`,
+    [id, s.phone, s.line1, s.line2 ?? null, s.city, s.state, s.postalCode, s.country],
+  );
+}
 
 export function checkoutRoutes(pool: Pool): Router {
   const r = Router();
@@ -61,23 +89,33 @@ export function checkoutRoutes(pool: Pool): Router {
     );
     if (!rows[0]) throw badRequest('Account not found');
 
-    if (body.saveAsDefault) {
-      await pool.query(
-        `update customers set phone = $2, addr_line1 = $3, addr_line2 = $4,
-                addr_city = $5, addr_state = $6, addr_postal_code = $7, addr_country = $8
-          where id = $1`,
-        [
-          rows[0].id, body.shipping.phone, body.shipping.line1, body.shipping.line2 ?? null,
-          body.shipping.city, body.shipping.state, body.shipping.postalCode, body.shipping.country,
-        ],
-      );
-    }
+    if (body.saveAsDefault) await saveDefaultAddress(pool, rows[0].id, body.shipping);
 
     res.json(
       await svc.createCheckoutSession(pool, body.items, rows[0], {
         ...body.shipping,
         line2: body.shipping.line2 ?? null,
       }),
+    );
+  });
+
+  // Pre-order: same login gate and validation as a paid checkout, no payment.
+  r.post('/checkout/preorder', requireCustomer, async (req, res) => {
+    const body = preorderSchema.parse(req.body);
+    const { rows } = await pool.query<{ id: string; email: string }>(
+      `select id, email from customers where id = $1`,
+      [customerId(req)],
+    );
+    if (!rows[0]) throw badRequest('Account not found');
+    if (body.saveAsDefault) await saveDefaultAddress(pool, rows[0].id, body.shipping);
+    res.status(201).json(
+      await svc.placePreorder(
+        pool,
+        body.items,
+        rows[0],
+        { ...body.shipping, line2: body.shipping.line2 ?? null },
+        body.note,
+      ),
     );
   });
 

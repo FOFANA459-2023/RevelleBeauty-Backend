@@ -184,6 +184,8 @@ export interface AdminOrderDetailDTO extends AdminOrderSummaryDTO {
   trackingNumber: string | null;
   trackingUrl: string | null;
   adminNotes: string | null;
+  /** What the customer wrote at checkout. */
+  customerNote: string | null;
   items: AdminOrderItemDTO[];
   fulfilledAt: string | null;
 }

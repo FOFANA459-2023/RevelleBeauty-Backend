@@ -10,6 +10,7 @@ import type {
   SwatchDTO,
   VariantDTO,
 } from '@contracts/index';
+import { env } from '../../config/env.js';
 import { storage } from '../../lib/storage.js';
 import { notFound } from '../../lib/errors.js';
 import { cached } from '../../lib/cache.js';
@@ -381,6 +382,8 @@ export async function getSettings(pool: Pool): Promise<StoreSettingsDTO> {
       announcement: s.announcement,
       checkoutEnabled: s.checkout_enabled,
       allowedShippingCountries: s.allowed_shipping_countries.map((c) => c.trim()),
+      checkoutMode: env.CHECKOUT_MODE,
+      storeWhatsapp: env.STORE_WHATSAPP ?? null,
     };
   });
 }

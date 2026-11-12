@@ -72,6 +72,32 @@ const schema = z.object({
     .transform((v) => v === 'true' || v === '1'),
   RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
 
+  /**
+   * 'preorder' — checkout places an order without taking payment; the store
+   *              is notified (email + WhatsApp) and arranges payment directly.
+   * 'payment'  — checkout goes to Stripe (or the dev mock without keys).
+   */
+  CHECKOUT_MODE: z.enum(['preorder', 'payment']).default('preorder'),
+  /** Where new-order emails go. Private: never sent to the browser. */
+  STORE_ORDER_EMAIL: z.string().email().optional(),
+  /**
+   * The store's WhatsApp number in international form (+81 70 1234 5678).
+   * Public: customers get a "message us" button with it.
+   */
+  STORE_WHATSAPP: z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.replace(/[^\d]/g, '') : undefined))
+    .pipe(z.string().regex(/^\d{8,15}$/, 'international number, 8-15 digits').optional()),
+  /**
+   * How new-order WhatsApp messages reach the store.
+   * 'none'      — logged only (the store still gets the email).
+   * 'callmebot' — CallMeBot's free API, which messages your own number once
+   *               you have activated it and received an API key.
+   */
+  WHATSAPP_DRIVER: z.enum(['none', 'callmebot']).default('none'),
+  CALLMEBOT_API_KEY: z.string().optional(),
+
   MAX_CART_LINES: z.coerce.number().int().positive().default(20),
   MAX_QTY_PER_LINE: z.coerce.number().int().positive().default(10),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
@@ -115,6 +141,14 @@ if (isProd) {
     console.error('MAIL_DRIVER=smtp requires SMTP_HOST, SMTP_USER and SMTP_PASS');
     process.exit(1);
   }
+  if (env.WHATSAPP_DRIVER === 'callmebot' && (!env.CALLMEBOT_API_KEY || !env.STORE_WHATSAPP)) {
+    console.error('WHATSAPP_DRIVER=callmebot requires CALLMEBOT_API_KEY and STORE_WHATSAPP');
+    process.exit(1);
+  }
+  if (env.CHECKOUT_MODE === 'preorder' && !env.STORE_ORDER_EMAIL) {
+    console.error('[warn] STORE_ORDER_EMAIL is not set — new pre-orders will not be emailed to the store.');
+  }
+
   // Non-fatal: password reset simply logs the link server-side until a real
   // mail driver is configured.
   if (env.MAIL_DRIVER === 'console') {

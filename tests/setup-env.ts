@@ -19,3 +19,8 @@ process.env.ADMIN_JWT_SECRET = 'test-secret-test-secret-test-secret-0123456789';
 // Ensure the mock (no-Stripe) path is exercised deterministically.
 delete process.env.STRIPE_SECRET_KEY;
 delete process.env.STRIPE_WEBHOOK_SECRET;
+// Pre-order notifications go to test addresses (captured, never sent).
+process.env.CHECKOUT_MODE = 'preorder';
+process.env.STORE_ORDER_EMAIL = 'orders@test.local';
+process.env.STORE_WHATSAPP = '+1 555 010 0000';
+process.env.WHATSAPP_DRIVER = 'none';

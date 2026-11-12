@@ -79,6 +79,7 @@ export function buildApp(pool: Pool): express.Express {
   api.use(reviewRoutes(pool));
   api.use('/checkout', noStore); // order/session payloads are personal
   api.use('/checkout/session', checkoutLimiter);
+  api.use('/checkout/preorder', checkoutLimiter);
   api.use(checkoutRoutes(pool));
 
   // Unified auth: customers AND admins sign in at /auth/login; the session's

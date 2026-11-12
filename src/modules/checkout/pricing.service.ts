@@ -13,6 +13,8 @@ export interface PricedLine extends CartLineValidated {
   quantity: number;
   stockQuantity: number;
   trackInventory: boolean;
+  /** Line-sheet code ("HS02") — snapshotted on the order so the store can pick it. */
+  shadeCode: string | null;
 }
 
 interface PriceRow {
@@ -28,6 +30,7 @@ interface PriceRow {
   hex_color: string | null;
   hex_color_secondary: string | null;
   sku: string | null;
+  shade_code: string | null;
   price_cents_override: number | null;
   stock_quantity: number;
   is_available: boolean;
@@ -44,7 +47,7 @@ export async function priceCart(
             p.name as product_name, p.status::text as product_status,
             p.track_inventory, p.base_price_cents,
             v.name as variant_name, v.slug as variant_slug,
-            v.hex_color, v.hex_color_secondary, v.sku,
+            v.hex_color, v.hex_color_secondary, v.sku, v.shade_code,
             v.price_cents_override, v.stock_quantity, v.is_available,
             (select i.storage_path from product_images i
               where i.product_id = p.id
@@ -98,6 +101,7 @@ export async function priceCart(
       imageUrl: r.image_path ? storage.publicUrl(r.image_path) : null,
       quantity: Math.min(item.quantity, env.MAX_QTY_PER_LINE),
       stockQuantity: r.stock_quantity,
+      shadeCode: r.shade_code,
       trackInventory: r.track_inventory,
     });
   }
