@@ -152,15 +152,20 @@ async function whiteness(file) {
 /** Square tile edges: the card's, and the product page stage's. */
 const TILE = 640;
 const STAGE = 1200;
-/** How much of a tile the product may fill — the same for both, so a photo
- *  reads at one scale from grid to product page. */
-const TILE_FILL = 0.86;
+/**
+ * How much of a tile a product shot on white may fill. At 0.86 on both, the
+ * product page's photo was all bottle: on a laptop it filled the screen and
+ * read as a zoom rather than a photograph. The stage now gives the product
+ * room to sit in; the card stays a little fuller because it is small.
+ */
+const CARD_FILL = 0.8;
+const STAGE_FILL = 0.7;
 /**
  * Names the tile recipe. Tiles are served with a year-long cache, so a tile
  * made differently must live at a different path — bump this whenever
  * cardTile() changes and every tile is rebuilt under the new name.
  */
-const TILE_VERSION = 'tile2';
+const TILE_VERSION = 'tile3';
 
 /** Median colour of the four corners — the photograph's own backdrop. */
 async function backdrop(flat) {
@@ -222,7 +227,7 @@ async function edgeColour(flat, side) {
  * Transparent PNGs are flattened onto white first, or their background would
  * read as black.
  */
-async function squareTile(raw, edge, quality) {
+async function squareTile(raw, edge, quality, fill) {
   const flat = await sharp(raw).rotate().flatten({ background: '#ffffff' }).toBuffer();
   const { data, info } = await sharp(flat).resize(64, 64, { fit: 'fill' })
     .raw().toBuffer({ resolveWithObject: true });
@@ -233,7 +238,7 @@ async function squareTile(raw, edge, quality) {
   if (white / (info.width * info.height) > 0.45) {
     const bg = await backdrop(flat);
     const product = await sharp(flat).trim({ background: bg, threshold: 28 }).toBuffer();
-    const inner = Math.round(edge * TILE_FILL);
+    const inner = Math.round(edge * fill);
     const fitted = await sharp(product).resize(inner, inner, { fit: 'inside' }).toBuffer();
     return sharp({ create: { width: edge, height: edge, channels: 3, background: bg } })
       .composite([{ input: fitted, gravity: 'centre' }])
@@ -265,9 +270,9 @@ async function squareTile(raw, edge, quality) {
 }
 
 /** The grid's tile: small, because a shop page downloads a dozen of them. */
-const cardTile = (raw) => squareTile(raw, TILE, 78);
+const cardTile = (raw) => squareTile(raw, TILE, 78, CARD_FILL);
 /** The product page's tile: large, because someone is looking closely. */
-const stageTile = (raw) => squareTile(raw, STAGE, 84);
+const stageTile = (raw) => squareTile(raw, STAGE, 84, STAGE_FILL);
 
 /** Width / height of the product itself once its backdrop is trimmed away. */
 async function productAspect(file) {
