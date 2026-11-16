@@ -162,6 +162,10 @@ jobs:
   image:
     name: Image (build, smoke test, scan, publish)
     needs: [ci-ok]
+    # Explicit: GitHub's implicit success() also fails when any job further up
+    # the chain was skipped (dependency-review is, on pushes), which would
+    # skip this job even though the gate passed.
+    if: ${{ !cancelled() && needs.ci-ok.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
