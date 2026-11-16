@@ -92,8 +92,24 @@ jobs:
       - run: npm ci
       - name: Known vulnerabilities in what ships (production dependencies)
         run: npm audit --omit=dev --audit-level=high
+      # Fails on any invalid or missing signature. One case is downgraded to
+      # a warning: EMISSINGSIGNATUREKEY ("has attestations but no
+      # corresponding public key") — the npm CLI not yet knowing a newer
+      # attestation key — which flags genuine packages, not tampered ones.
+      # npm ci has already checked every tarball against the lockfile hash.
       - name: Registry signatures and provenance of every installed package
-        run: npm audit signatures
+        run: |
+          set +e
+          out="$(npm audit signatures 2>&1)"; status=$?
+          set -e
+          echo "$out"
+          [ "$status" -eq 0 ] && exit 0
+          codes="$(grep -oE 'npm error code [A-Z]+' <<<"$out" | sort -u)"
+          if [ "$codes" = "npm error code EMISSINGSIGNATUREKEY" ] && ! grep -qiE 'invalid|missing registry signature' <<<"$out"; then
+            echo "::warning::npm could not find the public key for a package attestation (npm CLI key lag, not a bad package): $(grep -oE '[^ ]+@[0-9][^ ]* has attestations' <<<"$out" | head -3 | tr '\n' ' ')"
+            exit 0
+          fi
+          exit 1
 
   secrets:
     name: Secret scan (full history)
@@ -137,7 +153,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Dependency review needs the repository's Dependency graph (Settings →
+      # Code security). Until it is switched on the job notes that and steps
+      # aside instead of failing every pull request.
+      - name: Is the dependency graph enabled?
+        id: graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/dependency-graph/sbom" --silent 2>/dev/null; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Dependency graph is off, so dependency review is skipped. Enable it under Settings → Code security → Dependency graph."
+          fi
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        if: steps.graph.outputs.enabled == 'true'
         with:
           fail-on-severity: high
 

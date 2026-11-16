@@ -10,6 +10,13 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    # Major versions change APIs (stripe's payment API, TypeScript 7, vitest
+    # 5, …) and are upgraded deliberately, with their own testing — not as
+    # automatic PRs. @types/node also tracks the Node 22 runtime, not the
+    # newest Node. Security fixes still arrive through Dependabot alerts.
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: github-actions
     directory: /
