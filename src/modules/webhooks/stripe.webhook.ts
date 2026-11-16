@@ -150,6 +150,7 @@ async function onCheckoutPaid(pool: Pool, session: Stripe.Checkout.Session): Pro
     phone: session.customer_details?.phone ?? null,
     shipping: extractShipping(session),
     amountTotalCents: session.amount_total,
+    currency: session.currency,
     raw: session,
   });
 }

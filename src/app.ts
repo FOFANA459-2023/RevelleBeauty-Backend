@@ -28,6 +28,7 @@ function invalidateOnWrite(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 import { requireAdmin } from './middleware/auth.js';
+import { csrfGuard, originLock } from './middleware/security.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { catalogRoutes } from './modules/catalog/catalog.routes.js';
 import { checkoutRoutes } from './modules/checkout/checkout.routes.js';
@@ -42,10 +43,15 @@ import { adminReviewRoutes, reviewRoutes } from './modules/reviews/reviews.route
 
 export function buildApp(pool: Pool): express.Express {
   const app = express();
+  // One proxy hop: the Cloudflare Worker, which sets X-Forwarded-For to the
+  // visitor's real IP. originLock guarantees nothing else can reach us with
+  // a forged header once ORIGIN_SHARED_SECRET is set.
   app.set('trust proxy', 1);
+  app.disable('x-powered-by');
 
   app.use(helmet({ crossOriginResourcePolicy: false }));
   app.use(pinoHttp({ logger, autoLogging: { ignore: (req) => req.url === '/api/health' } }));
+  app.use(originLock(env.ORIGIN_SHARED_SECRET));
 
   // 1) WEBHOOK FIRST — express.raw before any JSON parser touches the stream.
   //    stripe.webhooks.constructEvent needs the exact bytes Stripe sent.
@@ -55,7 +61,8 @@ export function buildApp(pool: Pool): express.Express {
     stripeWebhookRoutes(pool),
   );
 
-  // 2) Everything else.
+  // 2) Everything else. State-changing requests must come from our own site.
+  app.use(csrfGuard());
   app.use(cors({ origin: env.CORS_ORIGINS, credentials: true }));
   app.use(cookieParser());
   app.use(express.json({ limit: '100kb' }));
@@ -79,7 +86,6 @@ export function buildApp(pool: Pool): express.Express {
   api.use(reviewRoutes(pool));
   api.use('/checkout', noStore); // order/session payloads are personal
   api.use('/checkout/session', checkoutLimiter);
-  api.use('/checkout/preorder', checkoutLimiter);
   api.use(checkoutRoutes(pool));
 
   // Unified auth: customers AND admins sign in at /auth/login; the session's

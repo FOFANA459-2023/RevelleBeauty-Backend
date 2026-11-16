@@ -1,135 +1,275 @@
 name: CI
 
+# Pipeline shape (one gate, then the image):
+#
+#   static ─┐
+#   test   ─┤
+#   audit  ─┤
+#   secrets┼─► CI OK ─► image: build → smoke-test → vulnerability scan
+#   codeql ─┤                       └─ main only: push + SBOM + provenance + sign
+#   deps   ─┘  (PRs)
+#
+# Supply-chain rules used throughout:
+# - every third-party action is pinned to a full commit SHA (a moved or
+#   hijacked tag cannot change what runs); Dependabot keeps the pins fresh
+# - tool images are pinned by digest
+# - the workflow token is read-only; jobs ask for exactly the extra scopes
+#   they need
+# - nothing is published unless every test and scan passed
+
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # Weekly re-run: new CVEs are published against code that hasn't changed.
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; a main build is never cut off mid-publish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: '22'
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
-  lint:
-    name: Lint
+  static:
+    name: Lint, types, Dockerfile
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - run: npm run lint
-
-  typecheck:
-    name: Typecheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
       - run: npm run typecheck
-
-  unit:
-    name: Unit tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:unit
-
-  e2e:
-    name: API end-to-end tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      # Full order lifecycle over real HTTP against a throwaway embedded
-      # Postgres booted inside the runner — no external DB, no secrets.
-      - run: npm run test:e2e
-
-  security:
-    name: Security tests + dependency audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      # Auth guards, JWT audience separation, cross-customer isolation,
-      # price-injection rejection, no-store headers, hash non-leakage.
-      - run: npm run test:security
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
       - run: npm run build
+      - name: Lint the Dockerfile (hadolint)
+        run: docker run --rm -i -v "$PWD/.hadolint.yaml:/.config/hadolint.yaml:ro" hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e < Dockerfile
 
-  # Single required status check for branch protection.
+  test:
+    name: Tests (unit + API integration + security)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # Every test file — catalog, checkout and payments, the order
+      # lifecycle, emails, reviews, password reset, auth and the security
+      # suites — over real HTTP against a throwaway embedded Postgres.
+      - run: npm test
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Known vulnerabilities in what ships (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+      - name: Registry signatures and provenance of every installed package
+        run: npm audit signatures
+
+  secrets:
+    name: Secret scan (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: gitleaks
+        # The checkout belongs to the runner user, not the container's; tell
+        # git inside the container the mount is safe to read.
+        run: >-
+          docker run --rm -v "$PWD:/repo"
+          -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*'
+          zricethezav/gitleaks:v8.24.3@sha256:e1b35e12a8c6fa8901f060459cfb6b2fc4c484d3afbe3b029733a3bbfab07055 git /repo --no-banner --redact --exit-code 1
+
+  codeql:
+    name: CodeQL (SAST)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:javascript-typescript
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
+  # The single required status check for branch protection.
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, unit, e2e, security, build]
+    timeout-minutes: 2
+    needs: [static, test, audit, secrets, codeql, dependency-review]
     if: always()
     steps:
-      - name: Verify all jobs passed
+      - name: Every gate passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
-            echo "One or more jobs failed"; exit 1
-          fi
-          echo "All green"
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) echo "::error::a required job did not pass ($r)"; exit 1 ;; esac
+          done
 
-  # ── Deploy: container image to GHCR on every green main build. ──────
-  # Cloudflare Containers (or any container host behind Cloudflare DNS)
-  # pulls this image. See DEPLOY.md.
-  deploy:
-    name: Deploy (publish container image)
-    runs-on: ubuntu-latest
+  # ── Image: built only after every test and scan above passed. ─────────
+  image:
+    name: Image (build, smoke test, scan, publish)
     needs: [ci-ok]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-      packages: write
+      packages: write # push to GHCR (main only)
+      id-token: write # keyless signing with cosign (main only)
+      security-events: write # upload the image scan to code scanning
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Image name (lowercase, as GHCR requires)
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
+
+      - name: Build (loaded locally for testing)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: revelle-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test (production mode, hardened container, real Postgres)
+        run: bash scripts/smoke-test.sh revelle-api:ci
+
+      - name: Vulnerability scan (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: revelle-api:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+
+      - name: Vulnerability report to code scanning
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: revelle-api:ci
+          scanners: vuln
+          ignore-unfixed: true
+          format: sarif
+          output: trivy.sarif
+          skip-setup-trivy: true
+      - name: Upload image scan
+        if: always() && hashFiles('trivy.sarif') != ''
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: trivy.sarif
+          category: container-image
+
+      # ── publish: main only ──
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compute image name
-        id: img
-        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-      - name: Build and push
-        uses: docker/build-push-action@v6
+
+      - name: Tags and labels
+        if: env.PUBLISH == 'true'
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest
+
+      # Same Dockerfile, same cache: the tested layers are what gets pushed.
+      - name: Push with SBOM and build provenance
+        if: env.PUBLISH == 'true'
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: true
-          tags: |
-            ${{ steps.img.outputs.name }}:latest
-            ${{ steps.img.outputs.name }}:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          sbom: true
+          provenance: mode=max
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        if: env.PUBLISH == 'true'
+      - name: Sign the image (keyless, tied to this workflow run)
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
+
+      - name: Summary
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### Published ${IMAGE_NAME}"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- tags: \`${GITHUB_SHA}\`, \`latest\`"
+            echo "- smoke-tested, scanned, signed (cosign keyless), SBOM + provenance attached"
+            echo
+            echo "Deploy on the VM: \`docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d\`"
+          } >> "$GITHUB_STEP_SUMMARY"

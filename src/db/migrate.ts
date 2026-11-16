@@ -9,6 +9,8 @@ import { MIGRATIONS_DIR } from '../lib/paths.js';
  * schema_migrations; each file runs once, in filename order, in a transaction.
  * The same .sql files can be pasted into the Supabase SQL Editor unchanged.
  */
+export const MIGRATION_FILE = /^\d{4}_[\w-]+\.sql$/;
+
 export async function runMigrations(pool: Pool): Promise<void> {
   await pool.query(`
     create table if not exists schema_migrations (
@@ -16,9 +18,13 @@ export async function runMigrations(pool: Pool): Promise<void> {
       applied_at timestamptz not null default now()
     )`);
 
+  // Only numbered migrations (0001_init.sql …). supabase_full_migration.sql
+  // is a one-off concatenation of them, pasted into Supabase at cut-over;
+  // running it after them on a fresh database re-inserts the seed rows and
+  // aborts the boot. The test harness applies exactly the same set.
   const files = fs
     .readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith('.sql'))
+    .filter((f) => MIGRATION_FILE.test(f))
     .sort();
 
   const { rows } = await pool.query<{ filename: string }>(

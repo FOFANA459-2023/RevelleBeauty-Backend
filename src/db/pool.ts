@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import pg from 'pg';
 import { env, isDev } from '../config/env.js';
 import { logger } from '../lib/logger.js';
@@ -32,14 +33,37 @@ export async function getPool(): Promise<pg.Pool> {
     idleTimeoutMillis: 10 * 60_000,
     keepAlive: true,
     connectionTimeoutMillis: 10_000,
-    // Supabase (direct .co and pooler .com hosts) requires TLS; local does not.
-    ssl: /supabase\.(co|com)/.test(connectionString)
-      ? { rejectUnauthorized: false }
-      : undefined,
+    ssl: tlsFor(connectionString),
   });
 
   pool.on('error', (err) => logger.error({ err }, 'idle postgres client error'));
   return pool;
+}
+
+/**
+ * TLS to the database. Supabase (direct .co and pooler .com hosts) requires
+ * it; local does not. Supabase signs with its own CA, so the certificate can
+ * only be verified against that CA: set DATABASE_SSL_CA to the certificate
+ * (PEM text, or a path to the .crt from Supabase → Database → SSL). Without
+ * it the connection is encrypted but unverified — open to impersonation by
+ * anyone on the network path — and production says so at boot.
+ */
+export function tlsFor(connectionString: string): pg.PoolConfig['ssl'] {
+  const ca = loadCa(env.DATABASE_SSL_CA);
+  if (ca) return { ca, rejectUnauthorized: true };
+  if (/supabase\.(co|com)/.test(connectionString)) {
+    if (env.NODE_ENV === 'production') {
+      logger.warn('DATABASE_SSL_CA is not set: the database certificate is NOT verified');
+    }
+    return { rejectUnauthorized: false };
+  }
+  return undefined;
+}
+
+function loadCa(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (value.includes('-----BEGIN CERTIFICATE-----')) return value.replace(/\\n/g, '\n');
+  return fs.readFileSync(value, 'utf8');
 }
 
 async function startEmbeddedPostgres(): Promise<string> {

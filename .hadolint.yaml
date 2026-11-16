@@ -1,0 +1,10 @@
+# Dockerfile lint rules (hadolint), with the reason for each exception.
+ignored:
+  # "Always tag the image version": the base image IS pinned — by digest —
+  # through the NODE_IMAGE build arg, which hadolint cannot see through.
+  - DL3006
+  # "Pin apt package versions" / "don't apt-get upgrade": the runtime stage
+  # deliberately takes Debian's current security patches on every build; the
+  # Trivy scan in CI then checks the result.
+  - DL3008
+  - DL3005

@@ -110,7 +110,7 @@ describe('order lifecycle', () => {
     const pay = await request(app).post('/api/checkout/mock-pay').send({ sessionId });
     expect(pay.status).toBe(200);
 
-    const conf = await request(app).get(`/api/checkout/session/${sessionId}`);
+    const conf = await request(app).get(`/api/checkout/session/${sessionId}`).set('Cookie', customerCookie);
     expect(conf.body.status).toBe('paid');
     expect(conf.body.order.items[0].quantity).toBe(2);
     expect(conf.body.order.shipping.line1).toBe(SHIPPING.line1);
@@ -118,7 +118,7 @@ describe('order lifecycle', () => {
     // Replay: idempotent — still paid, no double decrement.
     const replay = await request(app).post('/api/checkout/mock-pay').send({ sessionId });
     expect(replay.status).toBe(200);
-    const conf2 = await request(app).get(`/api/checkout/session/${sessionId}`);
+    const conf2 = await request(app).get(`/api/checkout/session/${sessionId}`).set('Cookie', customerCookie);
     expect(conf2.body.status).toBe('paid');
   });
 

@@ -110,10 +110,6 @@ export interface StoreSettingsDTO {
   announcement: string | null;
   checkoutEnabled: boolean;
   allowedShippingCountries: string[];
-  /** 'preorder': checkout places an order without payment. */
-  checkoutMode: 'preorder' | 'payment';
-  /** The store's WhatsApp number, digits only, for wa.me links. */
-  storeWhatsapp: string | null;
 }
 
 export type ProductSort = 'featured' | 'newest' | 'price_asc' | 'price_desc' | 'name';

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Pool } from 'pg';
 import { env, isProd, stripeEnabled } from '../../config/env.js';
 import { badRequest, notFound } from '../../lib/errors.js';
-import { customerId, requireCustomer } from '../../middleware/auth.js';
+import { customerId, requireCustomer, sessionOf } from '../../middleware/auth.js';
 import * as svc from './checkout.service.js';
 import { validateCart } from './pricing.service.js';
 
@@ -33,21 +33,6 @@ const createSessionSchema = z
     items: z.array(cartItemSchema).min(1).max(env.MAX_CART_LINES),
     shipping: shippingSchema,
     saveAsDefault: z.boolean().optional(),
-  })
-  .strict();
-
-const preorderSchema = z
-  .object({
-    items: z.array(cartItemSchema).min(1).max(env.MAX_CART_LINES),
-    shipping: shippingSchema,
-    saveAsDefault: z.boolean().optional(),
-    note: z
-      .string()
-      .max(2000)
-      .transform((v) => v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim())
-      .pipe(z.string().max(500))
-      .nullish()
-      .transform((v) => v || null),
   })
   .strict();
 
@@ -99,28 +84,10 @@ export function checkoutRoutes(pool: Pool): Router {
     );
   });
 
-  // Pre-order: same login gate and validation as a paid checkout, no payment.
-  r.post('/checkout/preorder', requireCustomer, async (req, res) => {
-    const body = preorderSchema.parse(req.body);
-    const { rows } = await pool.query<{ id: string; email: string }>(
-      `select id, email from customers where id = $1`,
-      [customerId(req)],
-    );
-    if (!rows[0]) throw badRequest('Account not found');
-    if (body.saveAsDefault) await saveDefaultAddress(pool, rows[0].id, body.shipping);
-    res.status(201).json(
-      await svc.placePreorder(
-        pool,
-        body.items,
-        rows[0],
-        { ...body.shipping, line2: body.shipping.line2 ?? null },
-        body.note,
-      ),
-    );
-  });
-
-  r.get('/checkout/session/:sessionId', async (req, res) => {
-    res.json(await svc.getOrderConfirmation(pool, req.params.sessionId));
+  // The confirmation shows a name and address: only its own customer sees it.
+  r.get('/checkout/session/:sessionId', requireCustomer, async (req, res) => {
+    const { sub, role } = sessionOf(req);
+    res.json(await svc.getOrderConfirmation(pool, req.params.sessionId as string, { id: sub, role }));
   });
 
   // ---- Dev-only mock payment (no Stripe keys configured) ----
@@ -152,6 +119,7 @@ export function checkoutRoutes(pool: Pool): Router {
         phone: null,
         shipping: null,
         amountTotalCents: rows[0].total_cents,
+        currency: null,
         raw: { mock: true, paidAt: new Date().toISOString() },
       });
       res.json({ ok: true });

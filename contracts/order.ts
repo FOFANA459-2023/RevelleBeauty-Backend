@@ -8,9 +8,7 @@ export type OrderStatus =
   | 'cancelled'
   | 'refunded'
   | 'expired'
-  | 'needs_review'
-  /** Placed without online payment; the store arranges payment directly. */
-  | 'preorder';
+  | 'needs_review';
 
 export type PaymentStatus = 'unpaid' | 'paid' | 'refunded' | 'partially_refunded';
 
@@ -19,27 +17,6 @@ export interface CreateCheckoutSessionBody {
   /** Collected on our checkout page; email comes from the login session. */
   shipping: import('./customer').ShippingInput;
   saveAsDefault?: boolean;
-}
-
-export interface PreorderBody {
-  items: CartItemInput[];
-  shipping: import('./customer').ShippingInput;
-  saveAsDefault?: boolean;
-  /** Anything the customer wants the store to know. Max 500 characters. */
-  note?: string | null;
-}
-
-export interface PreorderResponse {
-  /** Pass to the confirmation page as ?session_id=. */
-  reference: string;
-  orderId: string;
-  orderNumber: string;
-  totals: {
-    subtotalCents: Money;
-    shippingCents: Money;
-    totalCents: Money;
-    currency: string;
-  };
 }
 
 export interface CreateCheckoutSessionResponse {
@@ -88,6 +65,6 @@ export interface OrderConfirmation {
 }
 
 export interface OrderConfirmationResponse {
-  status: 'paid' | 'preorder' | 'processing' | 'expired' | 'failed';
+  status: 'paid' | 'processing' | 'expired' | 'failed';
   order: OrderConfirmation | null;
 }

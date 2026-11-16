@@ -73,7 +73,7 @@ export const stockUpdateSchema = z
 
 export const orderUpdateSchema = z
   .object({
-    status: z.enum(['pending', 'paid', 'fulfilled', 'cancelled', 'refunded', 'expired', 'needs_review', 'preorder']).optional(),
+    status: z.enum(['pending', 'paid', 'fulfilled', 'cancelled', 'refunded', 'expired', 'needs_review']).optional(),
     trackingNumber: z.string().trim().max(100).nullish(),
     trackingUrl: z.string().url().max(500).nullish(),
     adminNotes: z.string().max(5000).nullish(),
@@ -98,7 +98,7 @@ export const adminListQuerySchema = z.object({
 });
 
 export const orderListQuerySchema = z.object({
-  status: z.enum(['pending', 'paid', 'fulfilled', 'cancelled', 'refunded', 'expired', 'needs_review', 'preorder']).optional(),
+  status: z.enum(['pending', 'paid', 'fulfilled', 'cancelled', 'refunded', 'expired', 'needs_review']).optional(),
   q: z.string().max(120).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),

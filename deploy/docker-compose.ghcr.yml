@@ -5,12 +5,20 @@
 #   docker compose -f docker-compose.ghcr.yml up -d
 #   docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d   # update
 #
+# Only images that passed every CI test and the vulnerability scan are
+# published, and each is signed. To check a pulled image really came from
+# this repo's CI (optional, needs cosign):
+#   cosign verify ghcr.io/fofana459-2023/revellebeauty-backend:latest \
+#     --certificate-identity-regexp 'https://github.com/FOFANA459-2023/RevelleBeauty-Backend/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+#
 # NOTE: x86_64 only — CI does not publish ARM images. On A1.Flex use the
 # default docker-compose.yml, which builds natively.
 #
 # Direct-IP mode (no domain yet): port 4000 is exposed on the VM's public IP.
-# The Cloudflare->VM hop is unencrypted — fine for testing, switch to the
-# tunnel (docker-compose.yml Mode A) before taking real orders.
+# ORIGIN_SHARED_SECRET in .env makes the API refuse anything that did not
+# come through the Cloudflare Worker. The Cloudflare->VM hop is still
+# unencrypted until a domain + Tunnel (docker-compose.yml Mode A) exist.
 
 services:
   api:
@@ -19,6 +27,21 @@ services:
     env_file: .env
     ports:
       - '4000:4000'
+    # Container hardening: no Linux capabilities (port 4000 needs none), no
+    # privilege escalation, a read-only root filesystem (only /tmp and the
+    # uploads volume are writable), and limits so a runaway process can't
+    # take the 1 GB VM down with it.
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    volumes:
+      - uploads:/app/uploads
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 200
+    mem_limit: 640m
     healthcheck:
       test:
         - CMD
@@ -34,3 +57,8 @@ services:
       options:
         max-size: '10m'
         max-file: '3'
+
+volumes:
+  # Product photos uploaded through the admin (local storage driver) survive
+  # image updates instead of vanishing with the old container.
+  uploads:

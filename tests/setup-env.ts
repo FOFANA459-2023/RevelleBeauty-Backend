@@ -16,11 +16,12 @@ process.env.STORAGE_DRIVER = 'local';
 process.env.ADMIN_EMAIL = 'admin@test.local';
 process.env.ADMIN_PASSWORD_HASH = bcrypt.hashSync('test-admin-pass', 4);
 process.env.ADMIN_JWT_SECRET = 'test-secret-test-secret-test-secret-0123456789';
-// Ensure the mock (no-Stripe) path is exercised deterministically.
-delete process.env.STRIPE_SECRET_KEY;
-delete process.env.STRIPE_WEBHOOK_SECRET;
-// Pre-order notifications go to test addresses (captured, never sent).
-process.env.CHECKOUT_MODE = 'preorder';
+// Ensure the mock (no-Stripe) path is exercised deterministically. Blanked,
+// not deleted: dotenv refills a deleted variable from a developer's .env, and
+// the suite would then call Stripe with their real test key.
+process.env.STRIPE_SECRET_KEY = '';
+process.env.STRIPE_WEBHOOK_SECRET = '';
+// New-order notifications go to test addresses (captured, never sent).
 process.env.STORE_ORDER_EMAIL = 'orders@test.local';
 process.env.STORE_WHATSAPP = '+1 555 010 0000';
 process.env.WHATSAPP_DRIVER = 'none';

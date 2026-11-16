@@ -5,7 +5,6 @@ import type {
   CreateCheckoutSessionResponse,
   OrderConfirmation,
   OrderConfirmationResponse,
-  PreorderResponse,
 } from '@contracts/index';
 import { env, isProd, stripeEnabled } from '../../config/env.js';
 import { badRequest, conflict, notFound, unavailable } from '../../lib/errors.js';
@@ -18,9 +17,12 @@ import { sendMail } from '../../lib/mailer.js';
 import { sendStoreWhatsApp } from '../../lib/whatsapp.js';
 import {
   customerOrderEmail,
+  customerStatusEmail,
   storeOrderEmail,
   storeOrderWhatsApp,
+  type Links,
   type OrderForMessage,
+  type StatusStage,
 } from '../../lib/emails/orderMessages.js';
 
 export const stripe = stripeEnabled
@@ -54,15 +56,13 @@ interface CreatedOrder {
 
 /**
  * Prices the cart server-side and writes the order + item snapshots in one
- * transaction. 'pending' orders wait 30 minutes for a payment; 'preorder'
- * orders do not expire.
+ * transaction. The order waits 30 minutes for its payment.
  */
 async function createOrder(
   pool: Pool,
   items: CartItemInput[],
   customer: CheckoutCustomer,
   shipping: CheckoutShipping,
-  opts: { status: 'pending' | 'preorder'; note?: string | null },
 ): Promise<CreatedOrder> {
   const settings = await getSettings(pool);
   if (!settings.checkoutEnabled) throw unavailable('Checkout is temporarily disabled');
@@ -96,19 +96,15 @@ async function createOrder(
          (status, customer_id, email, customer_name, phone,
           shipping_name, shipping_line1, shipping_line2, shipping_city,
           shipping_state, shipping_postal_code, shipping_country,
-          currency, subtotal_cents, shipping_cents, total_cents, expires_at,
-          customer_note)
-       values ($16::order_status, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-               $12, $13, $14, $15,
-               case when $16 = 'pending' then now() + interval '30 minutes' end,
-               $17)
+          currency, subtotal_cents, shipping_cents, total_cents, expires_at)
+       values ('pending', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+               $12, $13, $14, $15, now() + interval '30 minutes')
        returning id, order_number`,
       [
         customer.id, customer.email, shipping.name, shipping.phone,
         shipping.name, shipping.line1, shipping.line2, shipping.city,
         shipping.state, shipping.postalCode, shipping.country,
         settings.currency, subtotalCents, shippingCents, totalCents,
-        opts.status, opts.note ?? null,
       ],
     );
     orderId = rows[0]!.id;
@@ -151,7 +147,7 @@ export async function createCheckoutSession(
   shipping: CheckoutShipping,
 ): Promise<CreateCheckoutSessionResponse> {
   const { orderId, orderNumber, lines, totals } = await createOrder(
-    pool, items, customer, shipping, { status: 'pending' },
+    pool, items, customer, shipping,
   );
   const { shippingCents } = totals;
   const settings = await getSettings(pool);
@@ -183,9 +179,8 @@ export async function createCheckoutSession(
           unit_amount: l.unitPriceCents,
           product_data: {
             name: l.variantName !== 'Default'
-              ? `${l.productName} — ${l.variantName}`
+              ? `${l.productName} — ${l.shadeCode ? `${l.shadeCode} ` : ''}${l.variantName}`
               : l.productName,
-            description: l.hexColor ?? undefined,
             metadata: { variant_id: l.variantId, product_id: l.productId },
           },
         },
@@ -224,35 +219,7 @@ export async function createCheckoutSession(
   return { checkoutUrl: session.url!, sessionId: session.id, orderId, orderNumber, totals };
 }
 
-/* ---------- pre-order (no online payment) ---------- */
-
-/**
- * Places a pre-order: the order is recorded, nothing is charged and stock is
- * left alone (the store confirms availability). The store is emailed and
- * WhatsApped and the customer emailed; a notification failure is logged and
- * never fails the order, which is already safely stored.
- */
-export async function placePreorder(
-  pool: Pool,
-  items: CartItemInput[],
-  customer: CheckoutCustomer,
-  shipping: CheckoutShipping,
-  note: string | null,
-): Promise<PreorderResponse> {
-  if (env.CHECKOUT_MODE !== 'preorder') throw badRequest('Pre-orders are not open');
-  const { orderId, orderNumber, totals } = await createOrder(
-    pool, items, customer, shipping, { status: 'preorder', note },
-  );
-  // The confirmation page reads orders by this reference; for a pre-order it
-  // is simply a second unguessable id.
-  const reference = `preorder_${orderId}`;
-  await pool.query(`update orders set stripe_checkout_session_id = $1 where id = $2`, [reference, orderId]);
-
-  await notifyNewOrder(pool, orderId);
-  return { reference, orderId, orderNumber, totals };
-}
-
-export async function loadOrderForMessage(pool: Pool, orderId: string): Promise<OrderForMessage> {
+export async function loadOrderForMessage(pool: Pool | PoolClient, orderId: string): Promise<OrderForMessage> {
   const { rows } = await pool.query(`select * from orders where id = $1`, [orderId]);
   const o = rows[0];
   if (!o) throw notFound('Order not found');
@@ -267,11 +234,12 @@ export async function loadOrderForMessage(pool: Pool, orderId: string): Promise<
     customerName: o.customer_name ?? o.shipping_name ?? 'Customer',
     email: o.email,
     phone: o.phone,
-    note: o.customer_note,
     currency: o.currency.trim(),
     subtotalCents: o.subtotal_cents,
     shippingCents: o.shipping_cents,
     totalCents: o.total_cents,
+    trackingNumber: o.tracking_number ?? null,
+    trackingUrl: o.tracking_url ?? null,
     shipping: {
       name: o.shipping_name,
       line1: o.shipping_line1,
@@ -298,25 +266,47 @@ function absoluteUrl(url: string): string {
   return url.startsWith('/') ? `${env.FRONTEND_URL}${url}` : url;
 }
 
-async function notifyNewOrder(pool: Pool, orderId: string): Promise<void> {
+const mailLinks = (): Links => ({
+  site: env.FRONTEND_URL.replace(/\/+$/, ''),
+  storeWhatsapp: env.STORE_WHATSAPP ?? null,
+});
+
+async function notifyNewOrder(pool: Pool | PoolClient, orderId: string): Promise<void> {
   const order = await loadOrderForMessage(pool, orderId);
-  const adminUrl = `${env.FRONTEND_URL}/admin/orders/${order.id}`;
+  const links = mailLinks();
+  const adminUrl = `${links.site}/admin/orders/${order.id}`;
   const jobs: [string, Promise<void>][] = [
-    ['customer email', sendMail(customerOrderEmail(order, {
-      storeWhatsapp: env.STORE_WHATSAPP ?? null,
-      accountUrl: `${env.FRONTEND_URL}/account/orders`,
-    }))],
+    ['customer email', sendMail(customerOrderEmail(order, links))],
     ['store whatsapp', sendStoreWhatsApp(storeOrderWhatsApp(order, { adminUrl }))],
   ];
   if (env.STORE_ORDER_EMAIL) {
-    jobs.push(['store email', sendMail(storeOrderEmail(order, { to: env.STORE_ORDER_EMAIL, adminUrl }))]);
+    jobs.push(['store email', sendMail(storeOrderEmail(order, { to: env.STORE_ORDER_EMAIL, adminUrl, links }))]);
   }
   const results = await Promise.allSettled(jobs.map(([, p]) => p));
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
-      logger.error({ err: r.reason, orderNumber: order.orderNumber }, `pre-order ${jobs[i]![0]} failed`);
+      logger.error({ err: r.reason, orderNumber: order.orderNumber }, `new-order ${jobs[i]![0]} failed`);
     }
   });
+}
+
+/**
+ * Emails the customer that their order moved on (packaged, shipped with its
+ * tracking details, delivered). A failure is logged; the stage change stands.
+ */
+export async function notifyStatusChange(
+  pool: Pool,
+  orderId: string,
+  stage: StatusStage,
+  storeNote: string | null,
+): Promise<void> {
+  try {
+    const order = await loadOrderForMessage(pool, orderId);
+    if (!order.email) return;
+    await sendMail(customerStatusEmail(order, stage, mailLinks(), storeNote));
+  } catch (err) {
+    logger.error({ err, orderId, stage }, 'status email failed');
+  }
 }
 
 function stripPublicUrl(url: string): string {
@@ -340,6 +330,8 @@ export interface PaidDetails {
   phone: string | null;
   shipping: Record<string, string | null> | null;
   amountTotalCents: number | null;
+  /** ISO currency Stripe charged in ("usd"); null when not from Stripe. */
+  currency: string | null;
   raw: unknown;
 }
 
@@ -348,6 +340,19 @@ export async function markOrderPaid(
   orderId: string,
   d: PaidDetails,
 ): Promise<void> {
+  // The amount is checked inside mark_order_paid; the currency is checked
+  // here. A payment in a different currency than the order is never trusted
+  // as "paid in full": a mismatched amount routes the order to needs_review,
+  // where a person looks at it before anything ships.
+  let amount = d.amountTotalCents;
+  if (d.currency) {
+    const { rows } = await db.query<{ currency: string }>(`select currency from orders where id = $1`, [orderId]);
+    const expected = rows[0]?.currency.trim().toLowerCase();
+    if (expected && d.currency.toLowerCase() !== expected) {
+      logger.error({ orderId, charged: d.currency, expected }, 'payment currency does not match the order');
+      amount = -1;
+    }
+  }
   await db.query(`select mark_order_paid($1,$2,$3,$4,$5,$6,$7,$8)`, [
     orderId,
     d.paymentIntentId,
@@ -355,21 +360,42 @@ export async function markOrderPaid(
     d.customerName,
     d.phone,
     d.shipping ? JSON.stringify(d.shipping) : null,
-    d.amountTotalCents,
+    amount,
     d.raw ? JSON.stringify(d.raw) : null,
   ]);
   // Stock just changed — refresh the public catalog (inStock flags).
   invalidateCatalog();
+
+  // Tell the store and the customer — once. The webhook and the success-page
+  // fallback can both confirm the same payment; whichever claims the order
+  // first sends the messages. A failed message never fails the payment.
+  const { rowCount } = await db.query(
+    `update orders set notified_at = now()
+      where id = $1 and payment_status = 'paid' and notified_at is null`,
+    [orderId],
+  );
+  if (rowCount) await notifyNewOrder(db, orderId);
 }
 
 /* ---------- confirmation (success page) ---------- */
 
+/** Who is asking: only the customer who placed an order (or an admin) may see it. */
+export interface Viewer {
+  id: string;
+  role: 'customer' | 'admin';
+}
+
 export async function getOrderConfirmation(
   pool: Pool,
   sessionId: string,
+  viewer: Viewer,
 ): Promise<OrderConfirmationResponse> {
   const order = await loadOrderBySession(pool, sessionId);
-  if (!order) throw notFound('Order not found');
+  // Someone else's order answers exactly like a missing one: the session id
+  // in a shared or leaked URL reveals nothing about the order behind it.
+  if (!order || (viewer.role !== 'admin' && order.customer_id !== viewer.id)) {
+    throw notFound('Order not found');
+  }
 
   if (order.status === 'pending' && stripe && !sessionId.startsWith('mock_')) {
     // The redirect can beat the webhook. Ask Stripe directly (server-side —
@@ -384,9 +410,10 @@ export async function getOrderConfirmation(
           phone: session.customer_details?.phone ?? null,
           shipping: extractShipping(session),
           amountTotalCents: session.amount_total,
+          currency: session.currency,
           raw: session,
         });
-        return getOrderConfirmation(pool, sessionId);
+        return getOrderConfirmation(pool, sessionId, viewer);
       }
       if (session.status === 'expired') return { status: 'expired', order: null };
     } catch (err) {
@@ -395,9 +422,6 @@ export async function getOrderConfirmation(
     return { status: 'processing', order: null };
   }
 
-  if (order.status === 'preorder') {
-    return { status: 'preorder', order: await buildConfirmation(pool, order) };
-  }
   if (order.status === 'pending') return { status: 'processing', order: null };
   if (order.status === 'expired' || order.status === 'cancelled') {
     return { status: 'expired', order: null };
@@ -408,6 +432,7 @@ export async function getOrderConfirmation(
 
 interface OrderRow {
   id: string;
+  customer_id: string | null;
   order_number: string;
   status: string;
   email: string | null;

@@ -23,6 +23,8 @@ const schema = z.object({
 
   /** Postgres connection string. Later: the Supabase pooler URL. */
   DATABASE_URL: z.string().optional(),
+  /** The database's CA certificate (PEM text or file path): turns on full TLS verification. */
+  DATABASE_SSL_CA: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   /** Port for the embedded dev database. */
   EMBEDDED_PG_PORT: z.coerce.number().int().positive().default(5544),
 
@@ -32,8 +34,9 @@ const schema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   SUPABASE_STORAGE_BUCKET: z.string().default('product-images'),
 
-  STRIPE_SECRET_KEY: z.string().startsWith('sk_').optional(),
-  STRIPE_WEBHOOK_SECRET: z.string().startsWith('whsec_').optional(),
+  // An empty value means "not set" (tests blank them so .env can't refill them).
+  STRIPE_SECRET_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().startsWith('sk_').optional()),
+  STRIPE_WEBHOOK_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().startsWith('whsec_').optional()),
   STRIPE_CURRENCY: z.string().length(3).default('usd'),
 
   ADMIN_EMAIL: z.string().email().optional(),
@@ -72,12 +75,6 @@ const schema = z.object({
     .transform((v) => v === 'true' || v === '1'),
   RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
 
-  /**
-   * 'preorder' — checkout places an order without taking payment; the store
-   *              is notified (email + WhatsApp) and arranges payment directly.
-   * 'payment'  — checkout goes to Stripe (or the dev mock without keys).
-   */
-  CHECKOUT_MODE: z.enum(['preorder', 'payment']).default('preorder'),
   /** Where new-order emails go. Private: never sent to the browser. */
   STORE_ORDER_EMAIL: z.string().email().optional(),
   /**
@@ -97,6 +94,14 @@ const schema = z.object({
    */
   WHATSAPP_DRIVER: z.enum(['none', 'callmebot']).default('none'),
   CALLMEBOT_API_KEY: z.string().optional(),
+
+  /**
+   * Shared secret the Cloudflare Worker sends on every proxied request
+   * (X-Origin-Auth). When set, requests without it are refused, so nobody
+   * can reach the API around Cloudflare. Set the same value as a Worker
+   * secret: `npx wrangler secret put ORIGIN_SHARED_SECRET`.
+   */
+  ORIGIN_SHARED_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
 
   MAX_CART_LINES: z.coerce.number().int().positive().default(20),
   MAX_QTY_PER_LINE: z.coerce.number().int().positive().default(10),
@@ -145,8 +150,8 @@ if (isProd) {
     console.error('WHATSAPP_DRIVER=callmebot requires CALLMEBOT_API_KEY and STORE_WHATSAPP');
     process.exit(1);
   }
-  if (env.CHECKOUT_MODE === 'preorder' && !env.STORE_ORDER_EMAIL) {
-    console.error('[warn] STORE_ORDER_EMAIL is not set — new pre-orders will not be emailed to the store.');
+  if (!env.STORE_ORDER_EMAIL) {
+    console.error('[warn] STORE_ORDER_EMAIL is not set — new orders will not be emailed to the store.');
   }
 
   // Non-fatal: password reset simply logs the link server-side until a real
@@ -155,6 +160,23 @@ if (isProd) {
     console.error(
       '[warn] MAIL_DRIVER=console — password reset emails are only logged, not sent. ' +
         'Set MAIL_DRIVER=resend (RESEND_API_KEY) or smtp to deliver them.',
+    );
+  }
+
+  // Fatal: taking real money without the webhook means a customer who pays
+  // and closes the tab before the redirect is charged while their order
+  // silently expires. Live keys therefore require the webhook secret.
+  if (env.STRIPE_SECRET_KEY?.startsWith('sk_live_') && !env.STRIPE_WEBHOOK_SECRET) {
+    console.error('A live STRIPE_SECRET_KEY requires STRIPE_WEBHOOK_SECRET (payments would be lost).');
+    process.exit(1);
+  }
+  if (env.STRIPE_SECRET_KEY?.startsWith('sk_test_')) {
+    console.error('[warn] STRIPE_SECRET_KEY is a TEST key — no real payments will be taken.');
+  }
+  if (!env.ORIGIN_SHARED_SECRET) {
+    console.error(
+      '[warn] ORIGIN_SHARED_SECRET is not set — the API accepts requests that bypass Cloudflare ' +
+        '(and their spoofed client IPs). Set it here and as a Worker secret.',
     );
   }
 

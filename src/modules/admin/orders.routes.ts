@@ -5,6 +5,7 @@ import type { Pool } from 'pg';
 import { notFound } from '../../lib/errors.js';
 import { storage } from '../../lib/storage.js';
 import { orderListQuerySchema, orderUpdateSchema } from './admin.schemas.js';
+import { notifyStatusChange } from '../checkout/checkout.service.js';
 
 export function adminOrderRoutes(pool: Pool): Router {
   const r = Router();
@@ -116,7 +117,6 @@ export function adminOrderRoutes(pool: Pool): Router {
         trackingNumber: o.tracking_number,
         trackingUrl: o.tracking_url,
         adminNotes: o.admin_notes,
-        customerNote: o.customer_note ?? null,
         createdAt: o.created_at,
         paidAt: o.paid_at,
         fulfilledAt: o.fulfilled_at,
@@ -149,13 +149,15 @@ export function adminOrderRoutes(pool: Pool): Router {
       .parse(req.body);
 
     const client = await pool.connect();
+    let previous: string | null = null;
     try {
       await client.query('begin');
-      const { rows } = await client.query(
-        `select id from orders where id = $1 for update`,
+      const { rows } = await client.query<{ id: string; fulfillment_stage: string | null }>(
+        `select id, fulfillment_stage::text from orders where id = $1 for update`,
         [req.params.id],
       );
       if (!rows[0]) throw notFound('Order not found');
+      previous = rows[0].fulfillment_stage;
 
       await client.query(
         `update orders set fulfillment_stage = $2::fulfillment_stage,
@@ -172,44 +174,24 @@ export function adminOrderRoutes(pool: Pool): Router {
         [req.params.id, stage, note ?? null],
       );
       await client.query('commit');
-      res.json({ ok: true });
     } catch (err) {
       await client.query('rollback');
       throw err;
     } finally {
       client.release();
     }
+
+    // Email the customer when the order really moved on. Payment received is
+    // already covered by the order confirmation. Sent after the response so a
+    // slow mail server never holds up the admin.
+    res.json({ ok: true });
+    if (stage !== 'payment_received' && stage !== previous) {
+      void notifyStatusChange(pool, req.params.id as string, stage, note || null);
+    }
   });
 
   r.patch('/orders/:id', withId, async (req, res) => {
     const patch = orderUpdateSchema.parse(req.body);
-
-    // A pre-order marked paid goes through the same path as an online
-    // payment: payment recorded, stock taken, the customer's timeline
-    // updated. It is the one way a pre-order's money becomes real.
-    if (patch.status === 'paid') {
-      const client = await pool.connect();
-      try {
-        await client.query('begin');
-        const { rowCount } = await client.query(
-          `update orders set status = 'pending' where id = $1 and status = 'preorder'`,
-          [req.params.id],
-        );
-        if (rowCount) {
-          await client.query(
-            `select mark_order_paid($1, $2, null, null, null, null, null, $3)`,
-            [req.params.id, `manual_${req.params.id}`, JSON.stringify({ manual: true, at: new Date().toISOString() })],
-          );
-          patch.status = undefined;
-        }
-        await client.query('commit');
-      } catch (err) {
-        await client.query('rollback');
-        throw err;
-      } finally {
-        client.release();
-      }
-    }
 
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -267,11 +249,11 @@ export function adminOrderRoutes(pool: Pool): Router {
     }>(`
       select
         (select count(*) from orders where created_at >= date_trunc('day', now())
-          and status in ('paid','fulfilled','needs_review','preorder')) as orders_today,
+          and status in ('paid','fulfilled','needs_review')) as orders_today,
         (select coalesce(sum(total_cents), 0) from orders
           where paid_at >= now() - interval '30 days'
             and payment_status = 'paid') as revenue_30d,
-        (select count(*) from orders where status in ('paid','preorder')) as pending_fulfillment,
+        (select count(*) from orders where status = 'paid') as pending_fulfillment,
         (select count(*) from orders where status = 'needs_review') as oversold_count
     `);
     const { rows: lowStock } = await pool.query(`

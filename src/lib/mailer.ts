@@ -14,11 +14,61 @@ import { logger } from './logger.js';
  * must not turn /auth/forgot-password into an account-existence oracle.
  */
 
+/** An image the HTML references as `cid:<cid>`, fetched from `url`. */
+export interface InlineImage {
+  cid: string;
+  url: string;
+}
+
 export interface Mail {
   to: string;
   subject: string;
   html: string;
   text: string;
+  /**
+   * Images to embed in the message. SMTP attaches them, so they show even
+   * when `url` isn't reachable from the reader's mail client (a local site,
+   * a blocked host). Other drivers fall back to linking `url` directly.
+   */
+  inline?: InlineImage[];
+}
+
+/** HTML with every cid: reference pointed at the image's public URL instead. */
+function linkInline(mail: Mail): string {
+  return (mail.inline ?? []).reduce((html, i) => html.replaceAll(`cid:${i.cid}`, i.url), mail.html);
+}
+
+/**
+ * Fetches each inline image and re-encodes it as PNG (WebP isn't safe in
+ * every mail client). An image that can't be fetched is linked by URL
+ * instead, so one missing photo never stops the email.
+ */
+async function embedInline(mail: Mail): Promise<{
+  html: string;
+  attachments: { filename: string; content: Buffer; cid: string; contentType: string }[];
+}> {
+  const { default: sharp } = await import('sharp');
+  let html = mail.html;
+  const attachments: { filename: string; content: Buffer; cid: string; contentType: string }[] = [];
+  await Promise.all(
+    (mail.inline ?? []).map(async (img, n) => {
+      try {
+        const res = await fetch(img.url, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const raw = Buffer.from(await res.arrayBuffer());
+        const png = await sharp(raw)
+          .resize(176, 176, { fit: 'contain', background: '#ffffff' })
+          .flatten({ background: '#ffffff' })
+          .png({ compressionLevel: 9 })
+          .toBuffer();
+        attachments.push({ filename: `image-${n + 1}.png`, content: png, cid: img.cid, contentType: 'image/png' });
+      } catch (err) {
+        logger.warn({ err: String(err), url: img.url }, 'inline email image unavailable — linking it instead');
+        html = html.replaceAll(`cid:${img.cid}`, img.url);
+      }
+    }),
+  );
+  return { html, attachments };
 }
 
 /** Test hook: in NODE_ENV=test every mail is captured here instead of sent. */
@@ -42,7 +92,7 @@ export async function sendMail(mail: Mail): Promise<void> {
           from: env.MAIL_FROM,
           to: [mail.to],
           subject: mail.subject,
-          html: mail.html,
+          html: linkInline(mail),
           text: mail.text,
         }),
       });
@@ -60,12 +110,14 @@ export async function sendMail(mail: Mail): Promise<void> {
         secure: env.SMTP_SECURE,
         auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
       });
+      const { html, attachments } = await embedInline(mail);
       await transport.sendMail({
         from: env.MAIL_FROM,
         to: mail.to,
         subject: mail.subject,
-        html: mail.html,
+        html,
         text: mail.text,
+        attachments,
       });
       logger.info(`mail sent via smtp to ${mail.to}: ${mail.subject}`);
       return;
