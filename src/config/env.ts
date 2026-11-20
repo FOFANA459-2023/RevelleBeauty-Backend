@@ -45,6 +45,7 @@ const schema = z.object({
   STRIPE_WEBHOOK_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().startsWith('whsec_').optional()),
   STRIPE_CURRENCY: z.string().length(3).default('usd'),
 
+  /** The business owner's admin login (the client). */
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD_HASH: z.string().startsWith('$2').optional(),
   /**
@@ -55,6 +56,12 @@ const schema = z.object({
   ADMIN_PASSWORD: z.string().min(8).optional(),
   /** Dev fallback when no hash/password is set. NEVER used in production. */
   ADMIN_DEV_PASSWORD: z.string().default('revelle-admin'),
+  /**
+   * Optional second admin: the developer who maintains the site. Seeded at
+   * boot exactly like the owner's account; remove both lines to revoke.
+   */
+  DEVELOPER_ADMIN_EMAIL: z.preprocess((v) => (v === '' ? undefined : v), z.string().email().optional()),
+  DEVELOPER_ADMIN_PASSWORD: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(8).optional()),
   ADMIN_JWT_SECRET: z.string().min(32).optional(),
   ADMIN_SESSION_HOURS: z.coerce.number().int().min(1).max(168).default(12),
 
@@ -69,6 +76,8 @@ const schema = z.object({
    */
   MAIL_DRIVER: z.enum(['console', 'resend', 'smtp']).default('console'),
   MAIL_FROM: z.string().default('Revelle Beauty <onboarding@resend.dev>'),
+  /** Where customer replies go (the business inbox), whichever account sends. */
+  MAIL_REPLY_TO: z.preprocess((v) => (v === '' ? undefined : v), z.string().email().optional()),
   RESEND_API_KEY: z.string().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
@@ -143,6 +152,7 @@ if (isProd) {
   if (!env.ADMIN_PASSWORD_HASH && !env.ADMIN_PASSWORD)
     missing.push('ADMIN_PASSWORD (or ADMIN_PASSWORD_HASH)');
   if (!env.ADMIN_JWT_SECRET) missing.push('ADMIN_JWT_SECRET');
+  if (env.DEVELOPER_ADMIN_EMAIL && !env.DEVELOPER_ADMIN_PASSWORD) missing.push('DEVELOPER_ADMIN_PASSWORD');
   if (missing.length) {
     console.error(`Missing required production env vars: ${missing.join(', ')}`);
     process.exit(1);
@@ -202,6 +212,12 @@ if (isProd) {
     );
   }
 }
+
+/** Every email that signs in as an admin (owner first, then the developer). */
+export const adminEmails = (): string[] =>
+  [env.ADMIN_EMAIL, env.DEVELOPER_ADMIN_EMAIL]
+    .filter((e): e is string => Boolean(e))
+    .map((e) => e.trim().toLowerCase());
 
 /** JWT secret: required in prod (checked above); stable dev default otherwise. */
 export const adminJwtSecret =

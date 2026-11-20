@@ -91,6 +91,7 @@ export async function sendMail(mail: Mail): Promise<void> {
         body: JSON.stringify({
           from: env.MAIL_FROM,
           to: [mail.to],
+          ...(env.MAIL_REPLY_TO ? { reply_to: env.MAIL_REPLY_TO } : {}),
           subject: mail.subject,
           html: linkInline(mail),
           text: mail.text,
@@ -114,6 +115,7 @@ export async function sendMail(mail: Mail): Promise<void> {
       await transport.sendMail({
         from: env.MAIL_FROM,
         to: mail.to,
+        replyTo: env.MAIL_REPLY_TO,
         subject: mail.subject,
         html,
         text: mail.text,

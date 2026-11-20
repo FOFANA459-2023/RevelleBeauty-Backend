@@ -15,6 +15,8 @@ process.env.DATABASE_URL = url;
 process.env.STORAGE_DRIVER = 'local';
 process.env.ADMIN_EMAIL = 'admin@test.local';
 process.env.ADMIN_PASSWORD_HASH = bcrypt.hashSync('test-admin-pass', 4);
+process.env.DEVELOPER_ADMIN_EMAIL = 'dev@test.local';
+process.env.DEVELOPER_ADMIN_PASSWORD = 'test-dev-pass';
 process.env.ADMIN_JWT_SECRET = 'test-secret-test-secret-test-secret-0123456789';
 // Ensure the mock (no-Stripe) path is exercised deterministically. Blanked,
 // not deleted: dotenv refills a deleted variable from a developer's .env, and

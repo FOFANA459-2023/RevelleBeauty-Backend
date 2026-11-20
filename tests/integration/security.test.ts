@@ -142,3 +142,24 @@ describe('security posture', () => {
     expect(res.body.error.code).toBe('not_found');
   });
 });
+
+describe('two admins: the business owner and the developer', () => {
+  it('both sign in as admins and open the admin dashboard', async () => {
+    for (const [email, password] of [['admin@test.local', 'test-admin-pass'], ['dev@test.local', 'test-dev-pass']]) {
+      const login = await request(app).post('/api/auth/login').send({ email, password });
+      expect(login.status, email).toBe(200);
+      expect(login.body.customer.role, email).toBe('admin');
+      const cookie = (login.headers['set-cookie'] as unknown as string[]).map((c) => c.split(';')[0]).join('; ');
+      expect((await request(app).get('/api/admin/orders').set('Cookie', cookie)).status, email).toBe(200);
+    }
+  });
+
+  it('neither admin email can be registered as a shopper account', async () => {
+    // Each from its own client IP: this checks the admin rule, not the login rate limit.
+    for (const [i, email] of ['admin@test.local', 'DEV@test.local'].entries()) {
+      const res = await request(app).post('/api/auth/register').set('X-Forwarded-For', `198.51.100.${i + 10}`)
+        .send({ email, password: 'password123', name: 'X' });
+      expect(res.status, email).toBe(400);
+    }
+  });
+});

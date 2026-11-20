@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import type { Pool } from 'pg';
-import { env, isProd } from '../../config/env.js';
+import { env, isProd, adminEmails } from '../../config/env.js';
 import { badRequest, conflict, notFound, unauthorized } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import { sendMail } from '../../lib/mailer.js';
@@ -115,8 +115,8 @@ export function customerAuthRoutes(pool: Pool): Router {
     const body = registerSchema.parse(req.body);
     const email = body.email.trim().toLowerCase();
 
-    // The admin identity is seeded at boot — never claimable via registration.
-    if (env.ADMIN_EMAIL && email === env.ADMIN_EMAIL.toLowerCase()) {
+    // Admin identities are seeded at boot — never claimable via registration.
+    if (adminEmails().includes(email)) {
       throw badRequest('This email cannot be used');
     }
 
