@@ -35,7 +35,13 @@ const schema = z.object({
   SUPABASE_STORAGE_BUCKET: z.string().default('product-images'),
 
   // An empty value means "not set" (tests blank them so .env can't refill them).
-  STRIPE_SECRET_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().startsWith('sk_').optional()),
+  // A full secret key (sk_) or a permission-scoped restricted key (rk_) —
+  // the latter is preferred: it can create Checkout Sessions but not move
+  // money out of the account.
+  STRIPE_SECRET_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().regex(/^(sk|rk)_(test|live)_/, 'a Stripe secret (sk_) or restricted (rk_) key').optional(),
+  ),
   STRIPE_WEBHOOK_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().startsWith('whsec_').optional()),
   STRIPE_CURRENCY: z.string().length(3).default('usd'),
 
@@ -119,6 +125,12 @@ export const env = parsed.data;
 export const isProd = env.NODE_ENV === 'production';
 export const isDev = env.NODE_ENV === 'development';
 
+/** 'live' or 'test' for a secret (sk_) or restricted (rk_) Stripe key; null when unset. */
+export function stripeKeyMode(key: string | undefined): 'live' | 'test' | null {
+  const m = key?.match(/^(?:sk|rk)_(live|test)_/);
+  return m ? (m[1] as 'live' | 'test') : null;
+}
+
 /** True when real Stripe is configured; otherwise dev mock checkout is used. */
 export const stripeEnabled = Boolean(env.STRIPE_SECRET_KEY);
 
@@ -166,11 +178,11 @@ if (isProd) {
   // Fatal: taking real money without the webhook means a customer who pays
   // and closes the tab before the redirect is charged while their order
   // silently expires. Live keys therefore require the webhook secret.
-  if (env.STRIPE_SECRET_KEY?.startsWith('sk_live_') && !env.STRIPE_WEBHOOK_SECRET) {
+  if (stripeKeyMode(env.STRIPE_SECRET_KEY) === 'live' && !env.STRIPE_WEBHOOK_SECRET) {
     console.error('A live STRIPE_SECRET_KEY requires STRIPE_WEBHOOK_SECRET (payments would be lost).');
     process.exit(1);
   }
-  if (env.STRIPE_SECRET_KEY?.startsWith('sk_test_')) {
+  if (stripeKeyMode(env.STRIPE_SECRET_KEY) === 'test') {
     console.error('[warn] STRIPE_SECRET_KEY is a TEST key — no real payments will be taken.');
   }
   if (!env.ORIGIN_SHARED_SECRET) {
