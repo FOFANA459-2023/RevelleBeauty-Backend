@@ -47,26 +47,36 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
-docker run -d --name "$API" --network "$NET" -p "127.0.0.1:$PORT:4000" \
-  --read-only --tmpfs /tmp:size=64m --tmpfs /app/uploads:uid=1000,gid=1000 \
-  --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 200 --memory 640m \
-  -e NODE_ENV=production -e LOG_LEVEL=warn \
-  -e DATABASE_URL="postgresql://revelle:revelle@$DB:5432/revelle" \
-  -e ADMIN_EMAIL=admin@smoke.test -e ADMIN_PASSWORD=smoke-test-password \
-  -e ADMIN_JWT_SECRET="$SECRET$SECRET" \
-  -e ORIGIN_SHARED_SECRET="$SECRET" \
-  -e FRONTEND_URL=https://shop.example -e CORS_ORIGINS=https://shop.example \
-  -e MAIL_DRIVER=console \
-  "$IMAGE" >/dev/null
+# Start the API the way production runs it; extra -e flags pass through.
+start_api() {
+  docker rm -f "$API" >/dev/null 2>&1 || true
+  docker run -d --name "$API" --network "$NET" -p "127.0.0.1:$PORT:4000" \
+    --read-only --tmpfs /tmp:size=64m --tmpfs /app/uploads:uid=1000,gid=1000 \
+    --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 200 --memory 640m \
+    -e NODE_ENV=production -e LOG_LEVEL=warn \
+    -e DATABASE_URL="postgresql://revelle:revelle@$DB:5432/revelle" \
+    -e ADMIN_EMAIL=admin@smoke.test -e ADMIN_PASSWORD=smoke-test-password \
+    -e ADMIN_JWT_SECRET="$SECRET$SECRET" \
+    -e ORIGIN_SHARED_SECRET="$SECRET" \
+    -e FRONTEND_URL=https://shop.example -e CORS_ORIGINS=https://shop.example \
+    -e MAIL_DRIVER=console \
+    "$@" "$IMAGE" >/dev/null
+}
 
+wait_healthy() {
+  local state=starting
+  for _ in $(seq 1 90); do
+    state="$(docker inspect -f '{{.State.Health.Status}}' "$API" 2>/dev/null || echo starting)"
+    [ "$state" = healthy ] && return 0
+    [ "$(docker inspect -f '{{.State.Running}}' "$API")" = true ] || fail "container exited during start-up"
+    sleep 1
+  done
+  fail "container never became healthy (last: $state)"
+}
+
+start_api
 echo "Waiting for the container's HEALTHCHECK…"
-for _ in $(seq 1 90); do
-  state="$(docker inspect -f '{{.State.Health.Status}}' "$API" 2>/dev/null || echo starting)"
-  [ "$state" = healthy ] && break
-  [ "$(docker inspect -f '{{.State.Running}}' "$API")" = true ] || fail "container exited during start-up"
-  sleep 1
-done
-[ "$state" = healthy ] || fail "container never became healthy (last: $state)"
+wait_healthy
 pass "container healthy (migrations ran against a fresh database)"
 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
@@ -99,5 +109,44 @@ done
 [ "$(docker exec "$API" id -u)" != 0 ] && pass "runs as a non-root user" || fail "runs as root"
 docker exec "$API" sh -c 'touch /app/dist/x' 2>/dev/null && fail "root filesystem is writable" || pass "root filesystem read-only"
 docker exec "$API" sh -c 'command -v npm' >/dev/null 2>&1 && fail "npm present in the runtime image" || pass "no package manager in the image"
+
+# ── Live-mode Stripe configuration (fake keys: nothing reaches Stripe) ──
+echo "Restarting with live-mode Stripe settings…"
+WHSEC="whsec_smoke$SECRET"
+start_api -e STRIPE_SECRET_KEY="rk_live_smoke$SECRET" -e STRIPE_WEBHOOK_SECRET="$WHSEC"
+wait_healthy
+pass "boots with a restricted live key (rk_live_) and a webhook secret"
+
+webhook() { # $1 = payload, $2 = Stripe-Signature header
+  curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/webhooks/stripe" \
+    -H "X-Origin-Auth: $SECRET" -H 'Origin: https://hooks.stripe.example' \
+    -H 'Content-Type: application/json' -H "Stripe-Signature: $2" --data-binary "$1"
+}
+EVENT='{"id":"evt_smoke_1","object":"event","type":"smoke.test","data":{"object":{}}}'
+T="$(date +%s)"
+SIG="$(printf '%s.%s' "$T" "$EVENT" | openssl dgst -sha256 -hmac "$WHSEC" | awk '{print $NF}')"
+[ "$(webhook "$EVENT" "t=$T,v1=deadbeef")" = 400 ] && pass "webhook with a forged signature refused" || fail "forged webhook accepted"
+[ "$(webhook "$EVENT" '')" = 400 ] && pass "webhook without a signature refused" || fail "unsigned webhook accepted"
+[ "$(webhook "$EVENT" "t=$T,v1=$SIG")" = 200 ] && pass "correctly signed webhook accepted (CSRF guard doesn't block it)" \
+  || fail "signed webhook refused"
+[ "$(webhook "$EVENT" "t=$T,v1=$SIG")" = 200 ] && pass "replayed webhook acknowledged once (idempotent)" || fail "webhook replay"
+TAMPERED='{"id":"evt_smoke_2","object":"event","type":"smoke.test","data":{"object":{"amount":1}}}'
+[ "$(webhook "$TAMPERED" "t=$T,v1=$SIG")" = 400 ] && pass "payload altered after signing refused" || fail "tampered webhook accepted"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/webhooks/stripe" -H "Stripe-Signature: t=$T,v1=$SIG" \
+  -H 'Content-Type: application/json' --data-binary "$EVENT")" = 403 ] \
+  && pass "webhook that bypasses Cloudflare refused (origin lock)" || fail "webhook origin lock"
+
+echo "Restarting with a live key but no webhook secret (must refuse to start)…"
+start_api -e STRIPE_SECRET_KEY="rk_live_smoke$SECRET"
+for _ in $(seq 1 30); do
+  [ "$(docker inspect -f '{{.State.Running}}' "$API")" = false ] && break
+  sleep 1
+done
+if [ "$(docker inspect -f '{{.State.Running}}' "$API")" = false ] \
+  && docker logs "$API" 2>&1 | grep -q 'requires STRIPE_WEBHOOK_SECRET'; then
+  pass "live key without webhook secret refuses to start"
+else
+  fail "live key without webhook secret started anyway"
+fi
 
 echo "Smoke test passed: $IMAGE"

@@ -21,6 +21,11 @@ process.env.ADMIN_JWT_SECRET = 'test-secret-test-secret-test-secret-0123456789';
 // the suite would then call Stripe with their real test key.
 process.env.STRIPE_SECRET_KEY = '';
 process.env.STRIPE_WEBHOOK_SECRET = '';
+// Same for the origin lock: tests call the API directly, not via the Worker.
+process.env.ORIGIN_SHARED_SECRET = '';
+// The site's address decides which origins the CSRF guard accepts.
+process.env.FRONTEND_URL = 'http://localhost:5173';
+process.env.CORS_ORIGINS = 'http://localhost:5173';
 // New-order notifications go to test addresses (captured, never sent).
 process.env.STORE_ORDER_EMAIL = 'orders@test.local';
 process.env.STORE_WHATSAPP = '+1 555 010 0000';
